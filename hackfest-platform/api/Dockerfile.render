@@ -1,0 +1,15 @@
+# Render variant of the api image. Build context is the REPO ROOT (see
+# dockerContext in render.yaml), unlike ./Dockerfile which uses ./api.
+# Adds db/schema.sql + the schema-apply script so the preDeployCommand can
+# initialize Render Postgres (which, unlike the compose postgres image, has
+# no docker-entrypoint-initdb.d to run).
+FROM python:3.12-slim
+WORKDIR /app
+COPY api/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY api/app ./app
+COPY db/schema.sql ./db/schema.sql
+COPY scripts/apply_schema.py ./scripts/apply_schema.py
+# Render sends traffic to $PORT (10000, set in render.yaml); compose leaves
+# it unset and we fall back to 8000.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

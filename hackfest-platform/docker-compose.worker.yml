@@ -1,0 +1,24 @@
+# Judge worker only — for running on a host WITH Docker (VPS, your own
+# machine) while the rest of the platform lives on Render. Render managed
+# services have no Docker daemon, so container-based grading can't run there.
+#
+# Usage (on the worker host, with the repo checked out):
+#   cp .env.worker.example .env.worker   # paste Render's EXTERNAL URLs
+#   docker build -t hackfest/webhook-replay:latest ./challenges/webhook-replay
+#   docker compose -f docker-compose.worker.yml --env-file .env.worker up -d --scale worker=3
+#
+# DATABASE_URL must be Render's external Postgres string (includes
+# sslmode=require). REDIS_URL must be the Key Value EXTERNAL url (rediss://
+# with auth — enable external connections on the instance first).
+services:
+  worker:
+    build: ./worker
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+    volumes:
+      - ./challenges:/challenges:ro
+      - /var/run/docker.sock:/var/run/docker.sock   # launches sibling grading containers
+    # Scale with `--scale worker=N`; --compatibility makes the deploy block apply.
+    deploy:
+      replicas: 3

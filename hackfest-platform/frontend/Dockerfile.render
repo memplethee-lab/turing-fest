@@ -1,0 +1,7 @@
+# Render variant of the frontend. Same job as the compose nginx service:
+# serve the static pages and reverse-proxy /api/ to the api service — but
+# with the upstream host injected via env at container start (the official
+# nginx image envsubst's /etc/nginx/templates/*.template into conf.d/).
+FROM nginx:alpine
+COPY render.conf.template /etc/nginx/templates/default.conf.template
+COPY index.html admin.html /usr/share/nginx/html/

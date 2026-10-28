@@ -1,0 +1,8 @@
+# Real secrets — never commit these
+.env
+.env.worker
+.env.local
+
+# Python build artifacts
+__pycache__/
+*.pyc

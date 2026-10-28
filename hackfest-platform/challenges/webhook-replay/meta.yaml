@@ -1,0 +1,10 @@
+slug: webhook-replay
+title: "Webhook Replay & Staleness"
+image: "hackfest/webhook-replay:latest"
+editable_dir: /app/editable
+editable_files:
+  - Freshness.ts
+  - NonceStore.ts
+verify_cmd: ["bash", "verify.sh"]
+points: 100
+time_bonus_points: 30

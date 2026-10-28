@@ -1,0 +1,368 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Hackfest Admin</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #262a33; --text: #e6e6e6;
+    --muted: #9aa4b2; --accent: #60a5fa; --accent-dim: #2c3b52;
+    --good: #34d399; --bad: #f87171; --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; }
+  header { padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 1.1rem; margin: 0; font-weight: 600; }
+  nav { display: flex; gap: 0.5rem; padding: 0 1.5rem; border-bottom: 1px solid var(--border); }
+  nav button { background: none; border: none; color: var(--muted); padding: 0.75rem 1rem; cursor: pointer; font-size: 0.9rem; border-bottom: 2px solid transparent; }
+  nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+  main { padding: 1.5rem; max-width: 1000px; margin: 0 auto; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1.25rem; }
+  .panel h2 { font-size: 0.95rem; margin: 0 0 1rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0.6rem 0 0.25rem; }
+  input, textarea, select { width: 100%; background: #0d0f13; border: 1px solid var(--border); color: var(--text); padding: 0.5rem 0.6rem; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
+  textarea { min-height: 80px; resize: vertical; }
+  button.action { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 0.5rem 1rem; cursor: pointer; font-size: 0.85rem; margin-top: 0.9rem; }
+  button.action:hover { background: #33455e; }
+  button.danger { color: var(--bad); border-color: var(--bad); background: #3a2323; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin-top: 0.5rem; }
+  th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .status-passed { color: var(--good); }
+  .status-failed { color: var(--bad); }
+  .status-error { color: var(--warn); }
+  .status-queued, .status-running { color: var(--muted); }
+  .row { display: flex; gap: 0.75rem; }
+  .row > * { flex: 1; }
+  .muted { color: var(--muted); font-size: 0.8rem; }
+  #login-screen { max-width: 360px; margin: 4rem auto; }
+  .event-picker { margin-bottom: 1rem; }
+  .pill { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 10px; font-size: 0.75rem; border: 1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<div id="login-screen">
+  <div class="panel">
+    <h2>Admin Login</h2>
+    <label>Admin password</label>
+    <input type="password" id="admin-password" onkeydown="if(event.key==='Enter') login()" />
+    <button class="action" onclick="login()">Log in</button>
+    <p class="muted" id="login-error"></p>
+  </div>
+</div>
+
+<div id="app" style="display:none;">
+  <header>
+    <h1>🛠 Hackfest Admin</h1>
+    <button class="action" onclick="logout()">Log out</button>
+  </header>
+  <nav>
+    <button data-tab="events" onclick="showTab('events')" class="active">Events</button>
+    <button data-tab="challenges" onclick="showTab('challenges')">Challenges</button>
+    <button data-tab="teams" onclick="showTab('teams')">Teams & Scores</button>
+    <button data-tab="submissions" onclick="showTab('submissions')">Submissions</button>
+  </nav>
+  <main>
+    <div class="event-picker panel" style="padding:0.75rem 1.25rem;">
+      <label style="margin-top:0;">Active event</label>
+      <select id="event-select" onchange="onEventChange()"></select>
+    </div>
+
+    <!-- EVENTS TAB -->
+    <section id="tab-events">
+      <div class="panel">
+        <h2>Create Event</h2>
+        <label>Name</label>
+        <input id="ev-name" placeholder="My Hackfest 2026" />
+        <div class="row">
+          <div>
+            <label>Start (local time, converted to UTC on submit)</label>
+            <input id="ev-start" type="datetime-local" />
+          </div>
+          <div>
+            <label>End</label>
+            <input id="ev-end" type="datetime-local" />
+          </div>
+        </div>
+        <button class="action" onclick="createEvent()">Create event</button>
+        <p class="muted" id="ev-create-msg"></p>
+      </div>
+
+      <div class="panel" id="edit-event-panel" style="display:none;">
+        <h2>Edit Selected Event</h2>
+        <div class="row">
+          <div>
+            <label>Start</label>
+            <input id="ev-edit-start" type="datetime-local" />
+          </div>
+          <div>
+            <label>End</label>
+            <input id="ev-edit-end" type="datetime-local" />
+          </div>
+        </div>
+        <button class="action" onclick="updateEventTimes()">Save times</button>
+        <button class="action" onclick="freezeNow()">Freeze leaderboard now</button>
+        <p class="muted" id="ev-edit-msg"></p>
+      </div>
+    </section>
+
+    <!-- CHALLENGES TAB -->
+    <section id="tab-challenges" style="display:none;">
+      <div class="panel">
+        <h2>Add Challenge</h2>
+        <div class="row">
+          <div><label>Slug (matches image + challenges/ dir)</label><input id="ch-slug" placeholder="webhook-replay" /></div>
+          <div><label>Title</label><input id="ch-title" placeholder="Webhook Replay & Staleness" /></div>
+        </div>
+        <div class="row">
+          <div><label>Points</label><input id="ch-points" type="number" value="100" /></div>
+          <div><label>Time bonus (max, decays over event)</label><input id="ch-bonus" type="number" value="30" /></div>
+        </div>
+        <label>Editable files (comma-separated)</label>
+        <input id="ch-files" placeholder="Freshness.ts, NonceStore.ts" />
+        <label>Briefing (shown to teams — markdown)</label>
+        <textarea id="ch-briefing" placeholder="Phase 1: exploit... Phase 2: patch..."></textarea>
+        <button class="action" onclick="createChallenge()">Add challenge</button>
+        <p class="muted" id="ch-create-msg"></p>
+      </div>
+      <div class="panel">
+        <h2>Challenges in this event</h2>
+        <table id="challenges-table"><thead><tr><th>Slug</th><th>Title</th><th>Points</th><th>Bonus</th><th>Files</th><th></th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <!-- TEAMS TAB -->
+    <section id="tab-teams" style="display:none;">
+      <div class="panel">
+        <h2>Teams & Scores</h2>
+        <table id="teams-table"><thead><tr><th>#</th><th>Team</th><th>Points</th><th>Solves</th><th>Registered</th></tr></thead><tbody></tbody></table>
+        <a id="export-link" href="#" class="action" style="display:inline-block; text-decoration:none;">Export CSV</a>
+      </div>
+    </section>
+
+    <!-- SUBMISSIONS TAB -->
+    <section id="tab-submissions" style="display:none;">
+      <div class="panel">
+        <h2>Recent Submissions</h2>
+        <label>Filter by status</label>
+        <select id="sub-filter" onchange="loadSubmissions()">
+          <option value="">all</option>
+          <option value="queued">queued</option>
+          <option value="running">running</option>
+          <option value="passed">passed</option>
+          <option value="failed">failed</option>
+          <option value="error">error</option>
+        </select>
+        <table id="submissions-table">
+          <thead><tr><th>Team</th><th>Challenge</th><th>Status</th><th>Submitted</th><th>Graded</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const API = "/api/admin";
+let token = localStorage.getItem("hackfest_admin_token");
+let events = [];
+let currentEventId = null;
+
+function headers() {
+  return { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(`${API}${path}`, { ...opts, headers: headers() });
+  if (res.status === 401 || res.status === 403) { logout(); throw new Error("unauthorized"); }
+  if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+  const ct = res.headers.get("content-type") || "";
+  return ct.includes("application/json") ? res.json() : res.text();
+}
+
+async function login() {
+  const password = document.getElementById("admin-password").value;
+  try {
+    const res = await fetch(`${API}/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || "login failed");
+    const data = await res.json();
+    token = data.token;
+    localStorage.setItem("hackfest_admin_token", token);
+    boot();
+  } catch (e) {
+    document.getElementById("login-error").textContent = e.message;
+  }
+}
+
+function logout() {
+  localStorage.removeItem("hackfest_admin_token");
+  token = null;
+  document.getElementById("app").style.display = "none";
+  document.getElementById("login-screen").style.display = "block";
+}
+
+function showTab(name) {
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  ["events", "challenges", "teams", "submissions"].forEach(t => {
+    document.getElementById(`tab-${t}`).style.display = t === name ? "block" : "none";
+  });
+  if (name === "challenges") loadChallenges();
+  if (name === "teams") loadTeams();
+  if (name === "submissions") loadSubmissions();
+}
+
+function toLocalInputValue(iso) {
+  const d = new Date(iso);
+  const pad = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function loadEvents() {
+  events = await api("/events");
+  const sel = document.getElementById("event-select");
+  sel.innerHTML = events.map(e => `<option value="${e.id}">${e.name} (${new Date(e.start_at).toLocaleDateString()})</option>`).join("");
+  if (events.length && !currentEventId) currentEventId = events[0].id;
+  if (currentEventId) sel.value = currentEventId;
+  onEventChange();
+}
+
+function onEventChange() {
+  currentEventId = document.getElementById("event-select").value;
+  const ev = events.find(e => e.id === currentEventId);
+  const panel = document.getElementById("edit-event-panel");
+  if (ev) {
+    panel.style.display = "block";
+    document.getElementById("ev-edit-start").value = toLocalInputValue(ev.start_at);
+    document.getElementById("ev-edit-end").value = toLocalInputValue(ev.end_at);
+    document.getElementById("export-link").href = `${API}/events/${currentEventId}/export.csv`;
+  } else {
+    panel.style.display = "none";
+  }
+  // Refresh whichever tab is currently visible with data scoped to the newly selected event.
+  const active = document.querySelector("nav button.active")?.dataset.tab;
+  if (active && active !== "events") showTab(active);
+}
+
+async function createEvent() {
+  const msg = document.getElementById("ev-create-msg");
+  try {
+    const name = document.getElementById("ev-name").value.trim();
+    const start = document.getElementById("ev-start").value;
+    const end = document.getElementById("ev-end").value;
+    if (!name || !start || !end) { msg.textContent = "fill in all fields"; return; }
+    await api("/events", {
+      method: "POST",
+      body: JSON.stringify({ name, start_at: new Date(start).toISOString(), end_at: new Date(end).toISOString() }),
+    });
+    msg.textContent = "created.";
+    await loadEvents();
+  } catch (e) { msg.textContent = e.message; }
+}
+
+async function updateEventTimes() {
+  const msg = document.getElementById("ev-edit-msg");
+  try {
+    const start = document.getElementById("ev-edit-start").value;
+    const end = document.getElementById("ev-edit-end").value;
+    await api(`/events/${currentEventId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ start_at: new Date(start).toISOString(), end_at: new Date(end).toISOString() }),
+    });
+    msg.textContent = "saved.";
+    await loadEvents();
+  } catch (e) { msg.textContent = e.message; }
+}
+
+async function freezeNow() {
+  const msg = document.getElementById("ev-edit-msg");
+  try {
+    const res = await api(`/events/${currentEventId}/freeze-now`, { method: "POST" });
+    msg.textContent = `frozen with ${res.frozen_entries} teams on the board.`;
+  } catch (e) { msg.textContent = e.message; }
+}
+
+async function createChallenge() {
+  const msg = document.getElementById("ch-create-msg");
+  try {
+    const slug = document.getElementById("ch-slug").value.trim();
+    const title = document.getElementById("ch-title").value.trim();
+    const points = parseInt(document.getElementById("ch-points").value, 10);
+    const time_bonus_points = parseInt(document.getElementById("ch-bonus").value, 10);
+    const editable_files = document.getElementById("ch-files").value.split(",").map(s => s.trim()).filter(Boolean);
+    const briefing_md = document.getElementById("ch-briefing").value;
+    if (!slug || !title || !editable_files.length) { msg.textContent = "slug, title, and at least one editable file are required"; return; }
+    await api("/challenges", {
+      method: "POST",
+      body: JSON.stringify({ event_id: currentEventId, slug, title, points, time_bonus_points, editable_files, briefing_md }),
+    });
+    msg.textContent = "added.";
+    ["ch-slug","ch-title","ch-files","ch-briefing"].forEach(id => document.getElementById(id).value = "");
+    loadChallenges();
+  } catch (e) { msg.textContent = e.message; }
+}
+
+async function loadChallenges() {
+  if (!currentEventId) return;
+  const rows = await api(`/events/${currentEventId}/challenges`);
+  document.querySelector("#challenges-table tbody").innerHTML = rows.map(c => `
+    <tr>
+      <td>${c.slug}</td><td>${c.title}</td><td>${c.points}</td><td>${c.time_bonus_points}</td>
+      <td class="muted">${c.editable_files.join(", ")}</td>
+      <td><button class="action danger" onclick="deleteChallenge('${c.id}')">delete</button></td>
+    </tr>`).join("") || `<tr><td colspan="6" class="muted">no challenges yet</td></tr>`;
+}
+
+async function deleteChallenge(id) {
+  if (!confirm("Delete this challenge? Existing submissions for it are kept.")) return;
+  await api(`/challenges/${id}`, { method: "DELETE" });
+  loadChallenges();
+}
+
+async function loadTeams() {
+  if (!currentEventId) return;
+  const rows = await api(`/events/${currentEventId}/teams`);
+  document.querySelector("#teams-table tbody").innerHTML = rows.map((t, i) => `
+    <tr>
+      <td>${i + 1}</td><td>${t.name}</td><td>${t.total_points}</td><td>${t.solves}</td>
+      <td class="muted">${new Date(t.created_at).toLocaleString()}</td>
+    </tr>`).join("") || `<tr><td colspan="5" class="muted">no teams registered yet</td></tr>`;
+}
+
+async function loadSubmissions() {
+  if (!currentEventId) return;
+  const status = document.getElementById("sub-filter").value;
+  const rows = await api(`/events/${currentEventId}/submissions${status ? `?status=${status}` : ""}`);
+  document.querySelector("#submissions-table tbody").innerHTML = rows.map(s => `
+    <tr>
+      <td>${s.team_name}</td><td>${s.challenge_title}</td>
+      <td class="status-${s.status}">${s.status}</td>
+      <td class="muted">${new Date(s.submitted_at).toLocaleTimeString()}</td>
+      <td class="muted">${s.graded_at ? new Date(s.graded_at).toLocaleTimeString() : "—"}</td>
+      <td>${s.status === "error" ? `<button class="action" onclick="regrade('${s.id}')">regrade</button>` : ""}</td>
+    </tr>`).join("") || `<tr><td colspan="6" class="muted">no submissions yet</td></tr>`;
+}
+
+async function regrade(id) {
+  await api(`/submissions/${id}/regrade`, { method: "POST" });
+  loadSubmissions();
+}
+
+async function boot() {
+  document.getElementById("login-screen").style.display = "none";
+  document.getElementById("app").style.display = "block";
+  await loadEvents();
+  setInterval(() => {
+    const active = document.querySelector("nav button.active")?.dataset.tab;
+    if (active === "submissions") loadSubmissions();
+    if (active === "teams") loadTeams();
+  }, 5000);
+}
+
+if (token) boot(); else document.getElementById("login-screen").style.display = "block";
+</script>
+</body>
+</html>

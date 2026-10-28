@@ -1,0 +1,4 @@
+asyncpg==0.29.0
+redis==5.0.8
+docker==7.1.0
+PyYAML==6.0.2

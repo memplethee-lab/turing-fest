@@ -1,0 +1,26 @@
+# Render frontend nginx config. The official nginx image runs envsubst on
+# this file at container start, filling in ${PORT} and ${API_HOST} from the
+# service's environment (see render.yaml). $uri/$host below are nginx runtime
+# variables and are left untouched because no env vars share those names.
+server {
+    listen ${PORT};
+    server_name _;
+
+    location / {
+        root /usr/share/nginx/html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        # Matches the compose nginx behavior: strips the /api prefix, so the
+        # FastAPI routes stay path-identical between local and Render.
+        proxy_pass https://${API_HOST}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host ${API_HOST};
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        # SSE leaderboard stream: don't let the 60s default read timeout
+        # kill long-idle event streams.
+        proxy_read_timeout 3600s;
+    }
+}

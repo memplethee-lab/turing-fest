@@ -1,0 +1,89 @@
+# Render Blueprint for the Hackfest platform.
+#
+# Deploys: FastAPI api + nginx frontend (both Docker runtime, free plan)
+# and Render Key Value / Redis (free). Postgres is EXTERNAL: Neon - the
+# connection string is entered once in the Render Dashboard (DATABASE_URL
+# below is `sync: false`; never hardcode the real one here).
+#
+# NOT included: the judge worker. It launches sibling Docker containers to
+# grade submissions, and Render managed services have no Docker daemon.
+# Run the worker on a host that has Docker (VPS / your own machine) against
+# the same Neon DATABASE_URL + the Key Value EXTERNAL URL — see README "Deploying to Render".
+#
+# Paths below are relative to the repo root, so keep render.yaml at the root
+# of the repository (i.e. the hackfest-platform/ directory is the repo root).
+
+services:
+  - type: web
+    name: hackfest-api
+    runtime: docker
+    dockerfilePath: ./api/Dockerfile.render
+    dockerContext: .
+    plan: free
+    region: oregon
+    healthCheckPath: /health
+    # Applies db/schema.sql on every deploy (no-op once the schema exists;
+    # Neon has no initdb hook, so this is what provisions the tables).
+    preDeployCommand: python scripts/apply_schema.py
+    envVars:
+      # Render routes container traffic to port 10000 by default.
+      - key: PORT
+        value: "10000"
+      # Neon connection string - paste it in the Render Dashboard when the
+      # Blueprint sync asks. Keep ?sslmode=require (asyncpg requires TLS
+      # against Neon).
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          name: hackfest-redis
+          type: keyvalue
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: FLAG_SECRET
+        generateValue: true
+      # Prompted for in the Render Dashboard on first Blueprint sync.
+      - key: ADMIN_PASSWORD
+        sync: false
+      # Requests arrive same-origin through the frontend's nginx proxy,
+      # but set the real frontend origin anyway for direct-API clients.
+      - key: ALLOWED_ORIGINS
+        fromService:
+          name: hackfest-frontend
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: SUBMISSION_COOLDOWN_SECONDS
+        value: "60"
+      - key: SUBMISSIONS_PER_HOUR
+        value: "20"
+
+  - type: web
+    name: hackfest-frontend
+    runtime: docker
+    dockerfilePath: ./frontend/Dockerfile.render
+    dockerContext: ./frontend
+    plan: free
+    region: oregon
+    envVars:
+      - key: PORT
+        value: "10000"
+      # nginx proxies /api/ to the api service over HTTPS using this host.
+      - key: API_HOST
+        fromService:
+          name: hackfest-api
+          type: web
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+
+  - type: keyvalue
+    name: hackfest-redis
+    plan: free
+    region: oregon
+    # Leaderboard sorted sets and the submission queue must never be evicted.
+    maxmemoryPolicy: noeviction
+    ipAllowList:
+      # The external judge worker needs access; tighten to that host's IP
+      # once you know it (Key Value external connections are authenticated,
+      # so this is less dangerous than it looks).
+      - source: 0.0.0.0/0
+        description: everywhere
