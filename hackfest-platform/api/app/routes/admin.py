@@ -12,6 +12,7 @@ import csv
 import io
 import json
 import os
+import re
 from datetime import datetime, timezone
 
 import asyncpg
@@ -130,6 +131,7 @@ class ChallengePatch(BaseModel):
     time_bonus_points: int | None = None
     editable_files: list[str] | None = None
     briefing_md: str | None = None
+    starting_files: dict[str, str] | None = None
 
 
 @router.post("/events")
@@ -193,6 +195,29 @@ class ChallengeIn(BaseModel):
     time_bonus_points: int = 0
     editable_files: list[str]
     briefing_md: str
+    starting_files: dict[str, str] | None = None
+
+
+async def _seed_starting_files(conn, challenge_id: str, editable_files: list[str],
+                               starting_files: dict[str, str]) -> None:
+    """
+    Replace the challenge_files seed rows. The workspace serves exactly these,
+    so enforce full coverage of every editable file — a challenge whose
+    editor opens with missing files is an event-day hazard, and extra files
+    would be a leak vector if they ever drifted toward hidden content.
+    """
+    allowed = {f.strip() for f in editable_files}
+    given = set(starting_files)
+    if given - allowed:
+        raise HTTPException(400, f"starting files not in editable_files: {sorted(given - allowed)}")
+    if not allowed or given < allowed:
+        missing = sorted(allowed - given)
+        raise HTTPException(400, f"starting files missing for: {', '.join(missing)}")
+    await conn.execute("DELETE FROM challenge_files WHERE challenge_id=$1", challenge_id)
+    await conn.executemany(
+        "INSERT INTO challenge_files (challenge_id, filename, content) VALUES ($1,$2,$3)",
+        [(challenge_id, f, starting_files[f]) for f in editable_files],
+    )
 
 
 @router.post("/challenges")
@@ -212,7 +237,55 @@ async def create_challenge(body: ChallengeIn, admin=Depends(get_current_admin)):
             body.event_id, body.slug, body.title, body.points,
             body.time_bonus_points, body.editable_files, body.briefing_md,
         )
-        return {"id": str(row["id"])}
+        challenge_id = str(row["id"])
+        if body.starting_files is not None:
+            await _seed_starting_files(conn, challenge_id, body.editable_files, body.starting_files)
+        return {"id": challenge_id}
+
+
+@router.get("/challenges/{challenge_id}")
+async def get_challenge_admin(challenge_id: str, admin=Depends(get_current_admin)):
+    """Full challenge detail including the starting file contents, for the
+    admin UI's edit form."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, event_id, slug, title, points, time_bonus_points,
+                   editable_files, briefing_md
+            FROM challenges WHERE id=$1
+            """,
+            challenge_id,
+        )
+        if not row:
+            raise HTTPException(404, "no such challenge")
+        files = await conn.fetch(
+            "SELECT filename, content FROM challenge_files WHERE challenge_id=$1 ORDER BY filename",
+            challenge_id,
+        )
+        result = dict(row)
+        result["id"] = str(row["id"])
+        result["event_id"] = str(row["event_id"])
+        result["starting_files"] = {r["filename"]: r["content"] for r in files}
+        return result
+
+
+class ChallengeFilesIn(BaseModel):
+    starting_files: dict[str, str]
+
+
+@router.put("/challenges/{challenge_id}/files")
+async def replace_challenge_files(challenge_id: str, body: ChallengeFilesIn,
+                                  admin=Depends(get_current_admin)):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT editable_files FROM challenges WHERE id=$1", challenge_id
+        )
+        if not row:
+            raise HTTPException(404, "no such challenge")
+        await _seed_starting_files(conn, challenge_id, row["editable_files"], body.starting_files)
+    return {"ok": True}
 
 
 @router.get("/events/{event_id}/challenges")
@@ -234,17 +307,22 @@ async def update_challenge(challenge_id: str, body: ChallengePatch, admin=Depend
     grading re-reads editable_files from the challenge row at grade time.
     """
     updates = body.model_dump(exclude_none=True)
-    if not updates:
+    starting_files: dict[str, str] | None = updates.pop("starting_files", None)
+    if not updates and starting_files is None:
         raise HTTPException(400, "no fields to update")
     if "editable_files" in updates and (not updates["editable_files"] or any(not f.strip() for f in updates["editable_files"])):
         raise HTTPException(400, "editable_files must contain at least one file")
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, event_id FROM challenges WHERE id=$1", challenge_id
+            "SELECT id, event_id, editable_files FROM challenges WHERE id=$1", challenge_id
         )
         if not row:
             raise HTTPException(404, "no such challenge")
+        if starting_files is not None:
+            # Validate against the NEW editable list if files are changing too.
+            effective_files = updates.get("editable_files", row["editable_files"])
+            await _seed_starting_files(conn, challenge_id, effective_files, starting_files)
         if "slug" in updates:
             clash = await conn.fetchval(
                 "SELECT id FROM challenges WHERE event_id=$1 AND slug=$2 AND id<>$3",
@@ -254,6 +332,8 @@ async def update_challenge(challenge_id: str, body: ChallengePatch, admin=Depend
                 raise HTTPException(409, "another challenge already uses this slug for this event")
         # Column names come from the ChallengePatch field names (validated by
         # pydantic), not from user input, so the f-string UPDATE is safe.
+        if not updates:  # only starting files changed — PATCH recounts nothing
+            return {"ok": True}
         sets = ", ".join(f"{col}=(${i + 2})" for i, col in enumerate(updates))
         await conn.execute(
             f"UPDATE challenges SET {sets} WHERE id=$1",
@@ -429,3 +509,98 @@ async def unfreeze_now(event_id: str, admin=Depends(get_current_admin)):
             if not already:
                 raise HTTPException(404, "no such event")
     return {"ok": True}
+
+
+# ---------- similarity (anti copy-paste / collusion triage) ----------
+
+_SIM_TOKEN = re.compile(r"[A-Za-z0-9_]+")
+
+
+def _shingles(text: str, k: int = 8) -> set[tuple]:
+    """
+    8-gram shingles over the lowercased alphanumeric token stream. Stripping
+    to tokens makes the fingerprint robust against whitespace reflowing and
+    comment edits — the superficial changes a copier would make — while still
+    being deterministic and fast. Two independent authors can share common
+    idioms; that shows up as moderate similarity, well below the near-1.0
+    that a shared solution produces.
+    """
+    toks = _SIM_TOKEN.findall(text.lower())
+    if len(toks) < k:
+        return {tuple(toks)} if toks else set()
+    return {tuple(toks[i:i + k]) for i in range(len(toks) - k + 1)}
+
+
+def _load_files(files) -> dict:
+    # JSONB may come back from asyncpg as a str depending on codec setup.
+    if isinstance(files, str):
+        return json.loads(files)
+    return files
+
+
+@router.get("/events/{event_id}/similarity")
+async def submission_similarity(event_id: str, min_similarity: float = 0.75,
+                                max_pairs: int = 100, admin=Depends(get_current_admin)):
+    """
+    Cross-team similarity report for the Coincidences tab: pairs of teams
+    whose submissions for the SAME challenge+file are unusually alike.
+    Same-team pairs are skipped (a team resubmitting similar code is normal).
+    Only localStorage-level evidence — it flags for human review, never
+    auto-disqualifies. Uses token-shingle Jaccard over each submitted file.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        event = await conn.fetchval("SELECT 1 FROM events WHERE id=$1", event_id)
+        if not event:
+            raise HTTPException(404, "no such event")
+        rows = await conn.fetch(
+            """
+            SELECT s.id, s.team_id, s.files, s.submitted_at,
+                   t.name AS team_name, c.slug AS challenge_slug,
+                   c.title AS challenge_title
+            FROM submissions s
+            JOIN teams t ON t.id = s.team_id
+            JOIN challenges c ON c.id = s.challenge_id
+            WHERE c.event_id=$1
+            ORDER BY s.submitted_at
+            """,
+            event_id,
+        )
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for row in rows:
+        for filename, content in _load_files(row["files"]).items():
+            shingles = _shingles(content)
+            if not shingles:
+                continue
+            groups.setdefault((row["challenge_slug"], filename), []).append({
+                "id": str(row["id"]), "team_id": str(row["team_id"]),
+                "team_name": row["team_name"], "shingles": shingles,
+            })
+    pairs = []
+    for (challenge_slug, filename), subs in groups.items():
+        n = len(subs)
+        if n < 2 or n > 400:  # cap work; a 1-day event never comes close
+            continue
+        for i in range(n):
+            a = subs[i]
+            for j in range(i + 1, n):
+                b = subs[j]
+                if a["team_id"] == b["team_id"]:
+                    continue
+                # Upper bound on Jaccard = min/max of set sizes; skip early.
+                smaller, larger = sorted((len(a["shingles"]), len(b["shingles"])))
+                if larger == 0 or smaller / larger < min_similarity:
+                    continue
+                inter = len(a["shingles"] & b["shingles"])
+                union = len(a["shingles"]) + len(b["shingles"]) - inter
+                sim = inter / union if union else 0.0
+                if sim >= min_similarity:
+                    pairs.append({
+                        "challenge_slug": challenge_slug,
+                        "filename": filename,
+                        "similarity": round(sim, 3),
+                        "team_a": a["team_name"], "team_b": b["team_name"],
+                        "submission_a": a["id"], "submission_b": b["id"],
+                    })
+    pairs.sort(key=lambda p: p["similarity"], reverse=True)
+    return {"pairs": pairs[:min(max_pairs, 500)], "groups_compared": len(groups)}

@@ -81,3 +81,16 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id);
+
+-- Starting contents of each editable file, shown to teams in the workspace
+-- editor. Seeded by admins with the challenge. Hidden test files must never
+-- be added: this table is exactly what GET /api/challenges/{slug}/start
+-- serves, so it only ever holds the team-facing vulnerable files.
+CREATE TABLE IF NOT EXISTS challenge_files (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    challenge_id UUID NOT NULL REFERENCES challenges(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    content TEXT NOT NULL,
+    UNIQUE (challenge_id, filename)
+);
+CREATE INDEX IF NOT EXISTS idx_challenge_files_challenge ON challenge_files(challenge_id);

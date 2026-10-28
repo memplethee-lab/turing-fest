@@ -66,6 +66,7 @@
     <button data-tab="challenges" onclick="showTab('challenges')">Challenges</button>
     <button data-tab="teams" onclick="showTab('teams')">Teams & Scores</button>
     <button data-tab="submissions" onclick="showTab('submissions')">Submissions</button>
+    <button data-tab="coincidences" onclick="showTab('coincidences')">Coincidences</button>
     <button data-tab="admins" onclick="showTab('admins')">Admins</button>
   </nav>
   <main>
@@ -129,6 +130,12 @@
         <input id="ch-files" placeholder="Freshness.ts, NonceStore.ts" />
         <label>Briefing (shown to teams — markdown)</label>
         <textarea id="ch-briefing" placeholder="Phase 1: exploit... Phase 2: patch..."></textarea>
+        <label>Starting file contents — one <code>=== filename ===</code> section
+          per editable file (what the teams' workspace editor opens with)</label>
+        <textarea id="ch-files-blob" style="min-height:150px;" placeholder="=== Freshness.ts ===
+<full original file content here>
+=== NonceStore.ts ===
+<full original file content here>"></textarea>
         <button id="ch-save" class="action" onclick="saveChallenge()">Add challenge</button>
         <button id="ch-cancel" class="action" style="display:none;" onclick="cancelEditChallenge()">Cancel edit</button>
         <p class="muted" id="ch-create-msg"></p>
@@ -185,6 +192,27 @@
         <p class="muted">The ADMIN_PASSWORD env var only bootstraps the first "admin" account; after that, rotate accounts here.</p>
       </div>
     </section>
+
+    <!-- COINCIDENCES TAB -->
+    <section id="tab-coincidences" style="display:none;">
+      <div class="panel">
+        <h2>Cross-team similarity</h2>
+        <p class="muted">Compares each submitted file across <b>different teams</b>
+          (same-team resubmits are ignored) using token-shingle similarity, which
+          is robust to whitespace/comment edits. High similarity is evidence for
+          human review — not an automatic disqualification.</p>
+        <div class="row">
+          <div><label>Minimum similarity</label><input id="sim-min" type="number" value="0.75" step="0.05" min="0.01" max="1" /></div>
+          <div><label>Max pairs shown</label><input id="sim-max" type="number" value="100" min="1" max="500" /></div>
+        </div>
+        <button class="action" onclick="scanCoincidences()">Scan this event</button>
+        <p class="muted" id="sim-msg"></p>
+        <table id="similarity-table">
+          <thead><tr><th>Similarity</th><th>Challenge</th><th>File</th><th>Team A</th><th>Team B</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -234,7 +262,7 @@ function logout() {
 
 function showTab(name) {
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
-  ["events", "challenges", "teams", "submissions", "admins"].forEach(t => {
+  ["events", "challenges", "teams", "submissions", "admins", "coincidences"].forEach(t => {
     document.getElementById(`tab-${t}`).style.display = t === name ? "block" : "none";
   });
   if (name === "challenges") loadChallenges();
@@ -331,6 +359,24 @@ async function freezeNow() {
 
 let editingChallengeId = null;
 
+function parseStartFiles(blob) {
+  // "=== Freshness.ts ===\n<content>\n=== NonceStore.ts ===\n<content>" →
+  // { "Freshness.ts": "<content>", ... }
+  const result = {};
+  let name = null, buf = [];
+  for (const line of blob.split("\n")) {
+    const m = /^===\s*(.+?)\s*===$/.exec(line.trim());
+    if (m) {
+      if (name !== null) result[name] = buf.join("\n");
+      name = m[1].trim(); buf = [];
+    } else if (name !== null) {
+      buf.push(line);
+    }
+  }
+  if (name !== null) result[name] = buf.join("\n");
+  return result;
+}
+
 async function saveChallenge() {
   const msg = document.getElementById("ch-create-msg");
   try {
@@ -340,15 +386,17 @@ async function saveChallenge() {
     const time_bonus_points = parseInt(document.getElementById("ch-bonus").value, 10);
     const editable_files = document.getElementById("ch-files").value.split(",").map(s => s.trim()).filter(Boolean);
     const briefing_md = document.getElementById("ch-briefing").value;
+    const starting_files = parseStartFiles(document.getElementById("ch-files-blob").value);
     if (!slug || !title || !editable_files.length) { msg.textContent = "slug, title, and at least one editable file are required"; return; }
-    const payload = JSON.stringify({ slug, title, points, time_bonus_points, editable_files, briefing_md });
+    const payload = { slug, title, points, time_bonus_points, editable_files, briefing_md };
+    if (Object.keys(starting_files).length) payload.starting_files = starting_files;
     if (editingChallengeId) {
-      await api(`/challenges/${editingChallengeId}`, { method: "PATCH", body: payload });
+      await api(`/challenges/${editingChallengeId}`, { method: "PATCH", body: JSON.stringify(payload) });
       msg.textContent = "updated.";
     } else {
       await api("/challenges", {
         method: "POST",
-        body: JSON.stringify({ event_id: currentEventId, slug, title, points, time_bonus_points, editable_files, briefing_md }),
+        body: JSON.stringify({ event_id: currentEventId, ...payload }),
       });
       msg.textContent = "added.";
     }
@@ -372,6 +420,13 @@ function startEditChallenge(id) {
   document.getElementById("ch-cancel").style.display = "inline-block";
   document.getElementById("ch-create-msg").textContent = `editing “${c.title}”`;
   document.getElementById("ch-slug").scrollIntoView({ behavior: "smooth", block: "center" });
+  // Pull the seeded starting files so the editor-blob reflects current state.
+  api(`/challenges/${c.id}`).then(detail => {
+    const blob = Object.entries(detail.starting_files || {})
+      .map(([f, content]) => `=== ${f} ===\n${content}`)
+      .join("\n");
+    document.getElementById("ch-files-blob").value = blob;
+  }).catch(() => { /* form still usable; saving re-seeds via the server's 400 */ });
 }
 
 function cancelEditChallenge() {
@@ -435,6 +490,25 @@ async function loadSubmissions() {
 async function regrade(id) {
   await api(`/submissions/${id}/regrade`, { method: "POST" });
   loadSubmissions();
+}
+
+async function scanCoincidences() {
+  const msg = document.getElementById("sim-msg");
+  try {
+    if (!currentEventId) { msg.textContent = "select an event first"; return; }
+    msg.textContent = "scanning submissions…";
+    const min = parseFloat(document.getElementById("sim-min").value || "0.75");
+    const lim = parseInt(document.getElementById("sim-max").value || "100", 10);
+    const data = await api(`/events/${currentEventId}/similarity?min_similarity=${min}&max_pairs=${lim}`);
+    document.querySelector("#similarity-table tbody").innerHTML = data.pairs.map(p => `
+      <tr>
+        <td class="${p.similarity >= 0.9 ? 'status-failed' : ''}"><b>${(p.similarity * 100).toFixed(0)}%</b></td>
+        <td>${p.challenge_slug}</td><td class="muted">${p.filename}</td>
+        <td>${p.team_a}</td><td>${p.team_b}</td>
+        <td class="muted">${p.submission_a.slice(0, 8)}… / ${p.submission_b.slice(0, 8)}…</td>
+      </tr>`).join("") || `<tr><td colspan="6" class="muted">no cross-team pairs at or above ${min}</td></tr>`;
+    msg.textContent = data.pairs.length ? `${data.pairs.length} flagged pair(s) across ${data.groups_compared} challenge/file groups` : "clean — nothing above threshold";
+  } catch (e) { msg.textContent = e.message; }
 }
 
 async function loadAdmins() {

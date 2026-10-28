@@ -14,7 +14,8 @@ docker build -t hackfest/webhook-replay:latest ./challenges/webhook-replay
 docker compose up --build
 ```
 
-API comes up at `http://localhost/api`, leaderboard UI at `http://localhost/`.
+API comes up at `http://localhost/api`, leaderboard UI at `http://localhost/`,
+and the participant code-editor workspace at `http://localhost/workspace.html`.
 
 ## Deploying to Render
 
@@ -73,8 +74,10 @@ the worker host is up.
 
 ## Admin UI
 
-Visit `http://localhost/admin.html`, log in with `ADMIN_PASSWORD` (set in
-`.env`), and you can:
+Visit `http://localhost/admin.html`, log in with an admin account
+(username + password). The first login ever is bootstrapped from
+`ADMIN_PASSWORD` (set in `.env`) as user `admin`; after that, accounts live
+in the DB and are managed on the Admins tab.
 
 - **Events** — create an event (name, start/end time in your browser's local
   time, converted to UTC on submit), or edit an existing event's start/end
@@ -83,17 +86,22 @@ Visit `http://localhost/admin.html`, log in with `ADMIN_PASSWORD` (set in
 - **Challenges** — add a challenge to the selected event: slug (must match
   the `challenges/<slug>/` directory and built image tag), title, points,
   time-bonus budget, which filenames teams may submit, and the briefing text
-  shown to teams. Delete a challenge (existing submissions for it are kept).
+  shown to teams. **Edit** any of these mid-event (`PATCH /api/admin/challenges/{id}`
+  — already-awarded solves keep the points granted at solve time), or delete
+  a challenge (existing submissions for it are kept). The form also carries
+  the teams' **starting file contents** (`=== filename ===` sections, stored
+  in `challenge_files` and served to the workspace editor via
+  `GET /api/challenges/{slug}/start`).
 - **Teams & Scores** — live-ish table of every team's total points and solve
   count for the selected event, plus a CSV export button.
 - **Submissions** — a monitor of recent submissions with status (queued /
   running / passed / failed / error), filterable by status. An `error`
   status (worker crashed, Docker hiccuped, etc. — not a real pass/fail
   grading result) gets a **regrade** button that re-queues it.
-
-The admin token is a single shared secret (`ADMIN_PASSWORD`), not
-per-person accounts — fine for a small organizing team running one event;
-rotate the password between events.
+- **Admins** — add/remove per-admin accounts. Each login issues its own
+  token, so removing a departed organizer's account stops them at their
+  next login. The last remaining account can't be deleted, and you can't
+  delete your own while others exist.
 
 Everything the admin UI does goes through `/api/admin/*`, so you can script
 event setup instead of clicking through the UI if you prefer — e.g. to seed
@@ -116,6 +124,90 @@ VALUES (
 ```
 
 Teams then register with that `event_id` via `POST /api/teams/register`.
+
+### Team and per-user accounts
+
+Teams keep the shared name+password login (`POST /api/teams/register`,
+`/api/teams/login`) — handy for scripting and as the secret members share.
+On top of that, each person can get an individual account attached to their
+team:
+
+- `POST /api/users/register` — `{event_id, team_name, team_password, username,
+  password}`. The team's shared password proves membership; the username is
+  globally unique.
+- `POST /api/users/login` — `{username, password}` → user token.
+- `GET /api/users/me` — who I am, my team, and my teammates.
+
+A user token carries the same `team_id`/`event_id` claims as the team token,
+so `POST /api/submissions` and the submission-status route accept either —
+rate limits stay **per team** either way, so one eager member can't burn the
+team's cooldown faster than the team itself could.
+
+## Participant workspace (side-by-side editor)
+
+`http://localhost/workspace.html` (or `/workspace.html` on Render) is the
+team-facing web UI:
+
+```
+┌───────────────────────────────┬───────────────────────────────────┐
+│ LEFT — the challenge          │ RIGHT — the editor (CodeMirror)   │
+│ briefing, rendered markdown   │ one tab per editable file         │
+│ last submission status +      │ [Submit] [Reset ⚠] · Ctrl+Enter   │
+│ per-check pass/fail list      │ autosaves drafts to the server    │
+└───────────────────────────────┴───────────────────────────────────┘
+```
+
+- **Log in** as a team (shared name + password) or a personal account. The
+  token lives in `localStorage`; the page sets a strict
+  `Content-Security-Policy` meta so a stray script can't speak to other origins.
+- **The editor opens with the seeded starting files.** Admins paste the per-file
+  starting contents in the Challenge form (`=== Freshness.ts ===` style
+  `=== filename ===` sections); the api stores them in the `challenge_files`
+  table and serves them via `GET /api/challenges/{slug}/start`. Only
+  `editable_files` are ever stored there — hidden test files must never be
+  seeded. The vulnerable files also live in the challenge image; the DB seed
+  is what teams see, so keep them in sync when you rework a lab.
+- **Draft autosave** (`PUT /api/challenges/{slug}/draft/{file}`, 1.5s after the
+  last keystroke, plus on submit/reset): per team, per file, expires in a week.
+  Drafts are not submissions — no rate limit, no grading. They also give
+  organizers an evidentiary trail if a result is disputed.
+- **Reset file** re-pulls the pristine file from the server and re-saves the
+  draft — mirroring the "reset = fresh from the image" rule.
+- **Submit** posts exactly what the current buffers hold via the normal
+  `POST /api/submissions` shape; the page then polls the submission status and
+  shows the per-check results (check names only — never test contents).
+- The **event timer** is cosmetic (server times from `GET /api/challenges`, your
+  browser's clock for the countdown); all enforcement remains server-side.
+
+### Anti-cheat: what stops copying
+
+Everything graded here is *server-verified*, never browser-observed:
+
+1. **Hidden tests never leave the image** — grading runs in a network-disabled
+   container; teams only ever see pass/fail per named check.
+2. **Token-shingle similarity, cross-team only** — the admin
+   **Coincidences** tab (`GET /api/admin/events/{id}/similarity`) fingerprints
+   every submission (lowercase alphanumeric token stream → 8-gram shingles →
+   Jaccard), which is robust to whitespace/comment reflowing and only compares
+   *different* teams on the *same* challenge+file. It surfaces evidence for
+   human review, it never auto-disqualifies. Same-team pairs are skipped by
+   design; 0.7–0.8 is generic-idiom territory, >0.9 is copy-paste territory.
+3. **Per-team cooldown + hourly cap** — the same rate limit that protects the
+   judge queue also blunts rapid-fire answer trading.
+4. **Exploit phase stays local.** Participants run the vulnerable app via
+   `docker compose` on their own machine when a briefing says to explore; the
+   platform never executes participant code outside the judge container, and
+   the api exposes no exec endpoint — it can't be used as a compute service.
+5. **No flag guessing possible** — there are no flags to guess at all; grading
+   *is* the challenge.
+   What this means for briefings: don't design graded checks around a secret
+   value teams could copy between each other post-hoc (e.g. "change the API key
+   to X") — the checks must test behavior, not a coordinator-distributed
+   string. The hidden tests exist precisely so answers can't be shared as
+   text; keep it that way.
+6. **Editor-level "anti-copy" UI features are deliberately omitted** —
+   devtools bypass them and they only punish honest teams; the Coincidences
+   report catches the same offense server-side.
 
 ## How grading works
 
@@ -147,7 +239,17 @@ Teams then register with that `event_id` via `POST /api/teams/register`.
      image. Use it to sanity-check a new challenge before the event: the
      vulnerable files must FAIL `hidden_tests`, and the solution must PASS.
 2. `docker build -t hackfest/<slug>:latest ./challenges/<slug>`
-3. Insert a row into `challenges` pointing at it.
+3. Insert a row into `challenges` pointing at it, and seed one
+   `challenge_files` row per editable file (the workspace editor serves these
+   as the teams' starting content):
+   ```sql
+   INSERT INTO challenge_files (challenge_id, filename, content)
+   VALUES
+     ('<challenge_id>', 'Freshness.ts', '<full file content>'),
+     ('<challenge_id>', 'NonceStore.ts', '<full file content>');
+   ```
+   (Or paste the `=== filename ===` sections into the admin Challenge form —
+   same rows, created through `POST/PATCH /api/admin/challenges`.)
 
 Porting one of the existing patch-lab challenges (SSRF, deserialization,
 IDOR, etc.) into this shape is mostly: move the vulnerable file(s) into
@@ -186,7 +288,8 @@ write the Dockerfile for that language's runtime.
 
 ## Not built yet (left for you)
 
-- Per-user (vs per-team) accounts, and per-admin accounts (currently one
-  shared `ADMIN_PASSWORD`)
-- Editing a challenge's briefing/points after creation (currently:
-  delete + recreate)
+- Admin self-service password change (currently: add a new account, remove
+  the old one)
+- Re-running an exploit against the live app from the workspace (participants
+  exploit locally via compose today; a sandboxed replay endpoint would be a
+  natural next step — see the anti-cheat note about keeping exec off the api)

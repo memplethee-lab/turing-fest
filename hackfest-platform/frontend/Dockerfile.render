@@ -4,4 +4,5 @@
 # nginx image envsubst's /etc/nginx/templates/*.template into conf.d/).
 FROM nginx:alpine
 COPY render.conf.template /etc/nginx/templates/default.conf.template
-COPY index.html admin.html /usr/share/nginx/html/
+COPY *.html /usr/share/nginx/html/
+COPY vendor/ /usr/share/nginx/html/vendor/
