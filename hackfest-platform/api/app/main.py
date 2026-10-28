@@ -1,10 +1,23 @@
 import os
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from . import bootstrap
 from .routes import teams, events, challenges, submissions, leaderboard, admin
 
-app = FastAPI(title="Hackfest Platform API")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Applies db/schema.sql once (idempotent) before serving traffic —
+    # Neon has no initdb hook and free-tier Render services can't run a
+    # preDeployCommand.
+    await bootstrap.bootstrap()
+    yield
+
+
+app = FastAPI(title="Hackfest Platform API", lifespan=lifespan)
 
 # Comma-separated list of your real frontend origins, e.g.
 #   ALLOWED_ORIGINS=https://hackfest.example.com

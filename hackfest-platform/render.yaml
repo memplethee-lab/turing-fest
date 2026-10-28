@@ -22,9 +22,8 @@ services:
     plan: free
     region: oregon
     healthCheckPath: /health
-    # Applies db/schema.sql on every deploy (no-op once the schema exists;
-    # Neon has no initdb hook, so this is what provisions the tables).
-    preDeployCommand: python scripts/apply_schema.py
+    # Free tier services don't support preDeployCommand. Instead the api
+    # applies db/schema.sql itself, idempotently, at startup (app.bootstrap).
     envVars:
       # Render routes container traffic to port 10000 by default.
       - key: PORT

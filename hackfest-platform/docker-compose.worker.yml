@@ -7,9 +7,9 @@
 #   docker build -t hackfest/webhook-replay:latest ./challenges/webhook-replay
 #   docker compose -f docker-compose.worker.yml --env-file .env.worker up -d --scale worker=3
 #
-# DATABASE_URL must be Render's external Postgres string (includes
-# sslmode=require). REDIS_URL must be the Key Value EXTERNAL url (rediss://
-# with auth — enable external connections on the instance first).
+# DATABASE_URL is the shared Neon string (sslmode=require). REDIS_URL must be
+# the Render Key Value EXTERNAL url (rediss:// with auth — enable external
+# connections on the instance first).
 services:
   worker:
     build: ./worker

@@ -1,11 +1,11 @@
 """
 Apply db/schema.sql to the Postgres instance at DATABASE_URL.
 
-Runs as the api service's Render preDeployCommand. Idempotent: Render
-Postgres (unlike the compose postgres image) has no initdb hook, so this
-runs on every deploy but only applies the schema when the tables don't
-exist yet. To change the schema later, either ALTER manually or bump the
-check below / use a proper migration tool.
+For LOCAL setup only (idempotent, so it's safe to re-run). In production
+(Render + Neon) this is not needed: the api applies the schema itself at
+startup via api/app/bootstrap.py — Render free-tier services don't support
+preDeployCommand. To change the schema later, either ALTER manually or bump
+the check below / use a proper migration tool.
 """
 import asyncio
 import os
