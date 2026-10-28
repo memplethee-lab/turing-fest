@@ -87,7 +87,7 @@
             <input id="ev-end" type="datetime-local" />
           </div>
         </div>
-        <button class="action" onclick="createEvent()">Create event</button>
+        <button class="action" onclick="addEvent()">Create event</button>
         <p class="muted" id="ev-create-msg"></p>
       </div>
 
@@ -249,7 +249,7 @@ function onEventChange() {
   if (active && active !== "events") showTab(active);
 }
 
-async function createEvent() {
+async function addEvent() {
   const msg = document.getElementById("ev-create-msg");
   try {
     const name = document.getElementById("ev-name").value.trim();

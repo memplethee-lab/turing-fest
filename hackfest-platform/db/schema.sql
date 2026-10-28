@@ -1,8 +1,11 @@
 -- Hackfest platform schema
+-- Written to be idempotent (IF NOT EXISTS throughout): scripts/apply_schema.py
+-- re-runs it on every deploy, so Render/Neon provisioning needs no migration
+-- tooling.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-CREATE TABLE events (
+CREATE TABLE IF NOT EXISTS events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     start_at TIMESTAMPTZ NOT NULL,
@@ -11,7 +14,7 @@ CREATE TABLE events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE teams (
+CREATE TABLE IF NOT EXISTS teams (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
@@ -20,7 +23,7 @@ CREATE TABLE teams (
     UNIQUE (event_id, name)
 );
 
-CREATE TABLE challenges (
+CREATE TABLE IF NOT EXISTS challenges (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
     slug TEXT NOT NULL,              -- matches challenges/<slug> directory + image tag
@@ -32,7 +35,7 @@ CREATE TABLE challenges (
     UNIQUE (event_id, slug)
 );
 
-CREATE TABLE submissions (
+CREATE TABLE IF NOT EXISTS submissions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     challenge_id UUID NOT NULL REFERENCES challenges(id) ON DELETE CASCADE,
     team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -43,7 +46,7 @@ CREATE TABLE submissions (
     graded_at TIMESTAMPTZ
 );
 
-CREATE TABLE solves (
+CREATE TABLE IF NOT EXISTS solves (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     challenge_id UUID NOT NULL REFERENCES challenges(id) ON DELETE CASCADE,
     team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -53,6 +56,28 @@ CREATE TABLE solves (
     UNIQUE (challenge_id, team_id)   -- first correct solve per team per challenge counts; resubmits don't double-score
 );
 
-CREATE INDEX idx_submissions_team ON submissions(team_id);
-CREATE INDEX idx_submissions_challenge ON submissions(challenge_id);
-CREATE INDEX idx_solves_team ON solves(team_id);
+CREATE INDEX IF NOT EXISTS idx_submissions_team ON submissions(team_id);
+CREATE INDEX IF NOT EXISTS idx_submissions_challenge ON submissions(challenge_id);
+CREATE INDEX IF NOT EXISTS idx_solves_team ON solves(team_id);
+
+-- Per-admin accounts (replaces relying solely on the shared ADMIN_PASSWORD,
+-- which now only bootstraps the initial "admin" user — see routes/admin.py).
+CREATE TABLE IF NOT EXISTS admins (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Per-user accounts. Each user belongs to exactly one team; team membership
+-- is proven at registration with the team's shared password. Team-scoped
+-- endpoints accept a user's token wherever they accept the team token.
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_team ON users(team_id);
