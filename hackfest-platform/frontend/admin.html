@@ -47,7 +47,9 @@
 <div id="login-screen">
   <div class="panel">
     <h2>Admin Login</h2>
-    <label>Admin password</label>
+    <label>Username</label>
+    <input id="admin-username" value="admin" autocomplete="username" />
+    <label>Password</label>
     <input type="password" id="admin-password" onkeydown="if(event.key==='Enter') login()" />
     <button class="action" onclick="login()">Log in</button>
     <p class="muted" id="login-error"></p>
@@ -64,6 +66,7 @@
     <button data-tab="challenges" onclick="showTab('challenges')">Challenges</button>
     <button data-tab="teams" onclick="showTab('teams')">Teams & Scores</button>
     <button data-tab="submissions" onclick="showTab('submissions')">Submissions</button>
+    <button data-tab="admins" onclick="showTab('admins')">Admins</button>
   </nav>
   <main>
     <div class="event-picker panel" style="padding:0.75rem 1.25rem;">
@@ -105,6 +108,7 @@
         </div>
         <button class="action" onclick="updateEventTimes()">Save times</button>
         <button class="action" onclick="freezeNow()">Freeze leaderboard now</button>
+        <button id="ev-unfreeze" class="action" style="display:none;" onclick="unfreezeNow()">Unfreeze leaderboard</button>
         <p class="muted" id="ev-edit-msg"></p>
       </div>
     </section>
@@ -163,6 +167,24 @@
         </table>
       </div>
     </section>
+
+    <!-- ADMINS TAB -->
+    <section id="tab-admins" style="display:none;">
+      <div class="panel">
+        <h2>Add Admin Account</h2>
+        <div class="row">
+          <div><label>Username</label><input id="adm-username" /></div>
+          <div><label>Password (min 10 chars)</label><input id="adm-password" type="password" /></div>
+        </div>
+        <button class="action" onclick="addAdmin()">Add admin</button>
+        <p class="muted" id="adm-msg"></p>
+      </div>
+      <div class="panel">
+        <h2>Admin Accounts</h2>
+        <table id="admins-table"><thead><tr><th>Username</th><th>Created</th><th></th></tr></thead><tbody></tbody></table>
+        <p class="muted">The ADMIN_PASSWORD env var only bootstraps the first "admin" account; after that, rotate accounts here.</p>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -186,11 +208,12 @@ async function api(path, opts = {}) {
 }
 
 async function login() {
+  const username = document.getElementById("admin-username").value.trim() || "admin";
   const password = document.getElementById("admin-password").value;
   try {
     const res = await fetch(`${API}/login`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     });
     if (!res.ok) throw new Error((await res.json()).detail || "login failed");
     const data = await res.json();
@@ -211,12 +234,13 @@ function logout() {
 
 function showTab(name) {
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
-  ["events", "challenges", "teams", "submissions"].forEach(t => {
+  ["events", "challenges", "teams", "submissions", "admins"].forEach(t => {
     document.getElementById(`tab-${t}`).style.display = t === name ? "block" : "none";
   });
   if (name === "challenges") loadChallenges();
   if (name === "teams") loadTeams();
   if (name === "submissions") loadSubmissions();
+  if (name === "admins") loadAdmins();
 }
 
 function toLocalInputValue(iso) {
@@ -244,6 +268,7 @@ function onEventChange() {
     document.getElementById("ev-edit-start").value = toLocalInputValue(ev.start_at);
     document.getElementById("ev-edit-end").value = toLocalInputValue(ev.end_at);
     document.getElementById("export-link").href = `${API}/events/${currentEventId}/export.csv`;
+    document.getElementById("ev-unfreeze").style.display = isEventFrozen(ev) ? "inline-block" : "none";
   } else {
     panel.style.display = "none";
   }
@@ -278,6 +303,20 @@ async function updateEventTimes() {
       body: JSON.stringify({ start_at: new Date(start).toISOString(), end_at: new Date(end).toISOString() }),
     });
     msg.textContent = "saved.";
+    await loadEvents();
+  } catch (e) { msg.textContent = e.message; }
+}
+
+function isEventFrozen(ev) {
+  // Match the public leaderboard's rule: frozen only once freeze_at has passed.
+  return Boolean(ev.freeze_at && new Date(ev.freeze_at).getTime() <= Date.now());
+}
+
+async function unfreezeNow() {
+  const msg = document.getElementById("ev-edit-msg");
+  try {
+    await api(`/events/${currentEventId}/unfreeze`, { method: "POST" });
+    msg.textContent = "unfrozen — live leaderboard restored.";
     await loadEvents();
   } catch (e) { msg.textContent = e.message; }
 }
@@ -396,6 +435,38 @@ async function loadSubmissions() {
 async function regrade(id) {
   await api(`/submissions/${id}/regrade`, { method: "POST" });
   loadSubmissions();
+}
+
+async function loadAdmins() {
+  const rows = await api("/admins");
+  document.querySelector("#admins-table tbody").innerHTML = rows.map(a => `
+    <tr>
+      <td>${a.username}</td>
+      <td class="muted">${new Date(a.created_at).toLocaleString()}</td>
+      <td><button class="action danger" onclick="deleteAdmin('${a.id}')">remove</button></td>
+    </tr>`).join("") || `<tr><td colspan="3" class="muted">no admin accounts</td></tr>`;
+}
+
+async function addAdmin() {
+  const msg = document.getElementById("adm-msg");
+  const username = document.getElementById("adm-username").value.trim();
+  const password = document.getElementById("adm-password").value;
+  if (!username || !password) { msg.textContent = "username and password required"; return; }
+  try {
+    await api("/admins", { method: "POST", body: JSON.stringify({ username, password }) });
+    msg.textContent = "added.";
+    document.getElementById("adm-username").value = "";
+    document.getElementById("adm-password").value = "";
+    loadAdmins();
+  } catch (e) { msg.textContent = e.message; }
+}
+
+async function deleteAdmin(id) {
+  if (!confirm("Remove this admin account?")) return;
+  try {
+    await api(`/admins/${id}`, { method: "DELETE" });
+    loadAdmins();
+  } catch (e) { document.getElementById("adm-msg").textContent = e.message; }
 }
 
 async function boot() {

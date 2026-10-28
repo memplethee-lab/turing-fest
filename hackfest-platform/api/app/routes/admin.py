@@ -14,6 +14,7 @@ import json
 import os
 from datetime import datetime, timezone
 
+import asyncpg
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -406,3 +407,25 @@ async def freeze_now(event_id: str, admin=Depends(get_current_admin)):
             "UPDATE events SET freeze_at = COALESCE(freeze_at, now()) WHERE id=$1", event_id
         )
     return {"ok": True, "frozen_entries": len(entries)}
+
+
+@router.post("/events/{event_id}/unfreeze")
+async def unfreeze_now(event_id: str, admin=Depends(get_current_admin)):
+    """
+    Reverse of freeze-now: clears the frozen snapshot and nulls freeze_at, so
+    the public leaderboard goes back to the live (still-updating) sorted set.
+    Freezing again afterwards re-snapshots from the live key at that moment.
+    """
+    pool = await get_pool()
+    r = get_redis()
+    frozen_key = f"{leaderboard_key(event_id)}:frozen"
+    await r.delete(frozen_key)
+    async with pool.acquire() as conn:
+        updated = await conn.execute(
+            "UPDATE events SET freeze_at = NULL WHERE id=$1 AND freeze_at IS NOT NULL", event_id
+        )
+        if updated == "UPDATE 0":
+            already = await conn.fetchval("SELECT 1 FROM events WHERE id=$1", event_id)
+            if not already:
+                raise HTTPException(404, "no such event")
+    return {"ok": True}
