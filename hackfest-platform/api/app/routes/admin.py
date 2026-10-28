@@ -2,10 +2,11 @@
 Admin routes: create/edit events and challenges, monitor teams and
 submissions, regrade a stuck submission, export final scores.
 
-Auth model: a single shared admin password (ADMIN_PASSWORD env var) issues
-an admin-scoped JWT via /admin/login. That's enough for a one-day event run
-by a small organizing team; swap for real per-admin accounts if you reuse
-this platform repeatedly or with a larger ops team.
+Auth model: per-admin accounts in the `admins` table, each issuing its own
+admin-scoped JWT via /admin/login. The ADMIN_PASSWORD env var is only a
+bootstrap: on the first login attempt against an empty `admins` table it
+creates the initial "admin" account (so a password-only legacy login still
+works). Manage accounts from there via /admin/admins.
 """
 import csv
 import io
@@ -19,7 +20,7 @@ from pydantic import BaseModel
 
 from ..db import get_pool
 from ..redis_client import get_redis, leaderboard_key, SUBMISSION_QUEUE
-from ..auth import create_admin_token, get_current_admin
+from ..auth import create_admin_token, get_current_admin, hash_password, verify_password
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -27,19 +28,82 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 
 class LoginIn(BaseModel):
+    username: str = "admin"
     password: str
+
+
+async def _bootstrap_first_admin(conn) -> None:
+    """Seed the initial "admin" account from ADMIN_PASSWORD when the table
+    is still empty. After that first login the DB is the source of truth —
+    rotate/add/remove accounts via /admin/admins, not the env var."""
+    if ADMIN_PASSWORD and not await conn.fetchval("SELECT count(*) FROM admins"):
+        await conn.execute(
+            "INSERT INTO admins (username, password_hash) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            "admin", hash_password(ADMIN_PASSWORD),
+        )
 
 
 @router.post("/login")
 async def admin_login(body: LoginIn):
-    if not ADMIN_PASSWORD:
-        raise HTTPException(500, "ADMIN_PASSWORD is not configured on the server")
-    # Plain compare is fine here: this is one shared operator secret set via
-    # environment config, not a per-user password stored at rest — nothing
-    # to hash against. Rotate ADMIN_PASSWORD between events.
-    if body.password != ADMIN_PASSWORD:
-        raise HTTPException(401, "wrong admin password")
-    return {"token": create_admin_token()}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await _bootstrap_first_admin(conn)
+        row = await conn.fetchrow("SELECT password_hash FROM admins WHERE username=$1", body.username)
+    if not row or not verify_password(body.password, row["password_hash"]):
+        raise HTTPException(401, "wrong username or password")
+    return {"token": create_admin_token(body.username)}
+
+
+# ---------- admin accounts ----------
+
+class AdminIn(BaseModel):
+    username: str
+    password: str
+
+
+@router.get("/admins")
+async def list_admins(admin=Depends(get_current_admin)):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, username, created_at FROM admins ORDER BY created_at"
+        )
+        return [
+            {"id": str(r["id"]), "username": r["username"], "created_at": r["created_at"].isoformat()}
+            for r in rows
+        ]
+
+
+@router.post("/admins")
+async def create_admin_account(body: AdminIn, admin=Depends(get_current_admin)):
+    if len(body.password) < 10:
+        raise HTTPException(400, "password must be at least 10 characters")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            row = await conn.fetchrow(
+                "INSERT INTO admins (username, password_hash) VALUES ($1, $2) RETURNING id",
+                body.username, hash_password(body.password),
+            )
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(409, "username already taken")
+        return {"id": str(row["id"])}
+
+
+@router.delete("/admins/{admin_id}")
+async def delete_admin_account(admin_id: str, admin=Depends(get_current_admin)):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        count = await conn.fetchval("SELECT count(*) FROM admins")
+        if count <= 1:
+            raise HTTPException(400, "cannot delete the last admin account")
+        target = await conn.fetchrow("SELECT username FROM admins WHERE id=$1", admin_id)
+        if not target:
+            raise HTTPException(404, "no such admin")
+        if target["username"] == admin.get("sub"):
+            raise HTTPException(400, "log in as another admin to remove your own account")
+        await conn.execute("DELETE FROM admins WHERE id=$1", admin_id)
+    return {"ok": True}
 
 
 # ---------- events ----------
@@ -56,6 +120,15 @@ class EventPatch(BaseModel):
     start_at: datetime | None = None
     end_at: datetime | None = None
     freeze_at: datetime | None = None
+
+
+class ChallengePatch(BaseModel):
+    slug: str | None = None
+    title: str | None = None
+    points: int | None = None
+    time_bonus_points: int | None = None
+    editable_files: list[str] | None = None
+    briefing_md: str | None = None
 
 
 @router.post("/events")
@@ -146,10 +219,46 @@ async def list_challenges_admin(event_id: str, admin=Depends(get_current_admin))
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, slug, title, points, time_bonus_points, editable_files FROM challenges WHERE event_id=$1 ORDER BY title",
+            "SELECT id, slug, title, points, time_bonus_points, editable_files, briefing_md FROM challenges WHERE event_id=$1 ORDER BY title",
             event_id,
         )
         return [dict(r) for r in rows]
+
+
+@router.patch("/challenges/{challenge_id}")
+async def update_challenge(challenge_id: str, body: ChallengePatch, admin=Depends(get_current_admin)):
+    """Edit an existing challenge (title, points, files, briefing, ...).
+
+    Updating mid-event is fine: submissions reference the challenge by id and
+    grading re-reads editable_files from the challenge row at grade time.
+    """
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(400, "no fields to update")
+    if "editable_files" in updates and (not updates["editable_files"] or any(not f.strip() for f in updates["editable_files"])):
+        raise HTTPException(400, "editable_files must contain at least one file")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, event_id FROM challenges WHERE id=$1", challenge_id
+        )
+        if not row:
+            raise HTTPException(404, "no such challenge")
+        if "slug" in updates:
+            clash = await conn.fetchval(
+                "SELECT id FROM challenges WHERE event_id=$1 AND slug=$2 AND id<>$3",
+                row["event_id"], updates["slug"], challenge_id,
+            )
+            if clash:
+                raise HTTPException(409, "another challenge already uses this slug for this event")
+        # Column names come from the ChallengePatch field names (validated by
+        # pydantic), not from user input, so the f-string UPDATE is safe.
+        sets = ", ".join(f"{col}=(${i + 2})" for i, col in enumerate(updates))
+        await conn.execute(
+            f"UPDATE challenges SET {sets} WHERE id=$1",
+            challenge_id, *updates.values(),
+        )
+    return {"ok": True}
 
 
 @router.delete("/challenges/{challenge_id}")

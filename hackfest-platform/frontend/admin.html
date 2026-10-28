@@ -112,7 +112,7 @@
     <!-- CHALLENGES TAB -->
     <section id="tab-challenges" style="display:none;">
       <div class="panel">
-        <h2>Add Challenge</h2>
+        <h2 id="ch-heading">Add Challenge</h2>
         <div class="row">
           <div><label>Slug (matches image + challenges/ dir)</label><input id="ch-slug" placeholder="webhook-replay" /></div>
           <div><label>Title</label><input id="ch-title" placeholder="Webhook Replay & Staleness" /></div>
@@ -125,7 +125,8 @@
         <input id="ch-files" placeholder="Freshness.ts, NonceStore.ts" />
         <label>Briefing (shown to teams — markdown)</label>
         <textarea id="ch-briefing" placeholder="Phase 1: exploit... Phase 2: patch..."></textarea>
-        <button class="action" onclick="createChallenge()">Add challenge</button>
+        <button id="ch-save" class="action" onclick="saveChallenge()">Add challenge</button>
+        <button id="ch-cancel" class="action" style="display:none;" onclick="cancelEditChallenge()">Cancel edit</button>
         <p class="muted" id="ch-create-msg"></p>
       </div>
       <div class="panel">
@@ -169,6 +170,7 @@
 const API = "/api/admin";
 let token = localStorage.getItem("hackfest_admin_token");
 let events = [];
+let challengeRows = [];
 let currentEventId = null;
 
 function headers() {
@@ -234,6 +236,7 @@ async function loadEvents() {
 
 function onEventChange() {
   currentEventId = document.getElementById("event-select").value;
+  cancelEditChallenge();  // don't keep editing a challenge owned by another event
   const ev = events.find(e => e.id === currentEventId);
   const panel = document.getElementById("edit-event-panel");
   if (ev) {
@@ -287,7 +290,9 @@ async function freezeNow() {
   } catch (e) { msg.textContent = e.message; }
 }
 
-async function createChallenge() {
+let editingChallengeId = null;
+
+async function saveChallenge() {
   const msg = document.getElementById("ch-create-msg");
   try {
     const slug = document.getElementById("ch-slug").value.trim();
@@ -297,25 +302,65 @@ async function createChallenge() {
     const editable_files = document.getElementById("ch-files").value.split(",").map(s => s.trim()).filter(Boolean);
     const briefing_md = document.getElementById("ch-briefing").value;
     if (!slug || !title || !editable_files.length) { msg.textContent = "slug, title, and at least one editable file are required"; return; }
-    await api("/challenges", {
-      method: "POST",
-      body: JSON.stringify({ event_id: currentEventId, slug, title, points, time_bonus_points, editable_files, briefing_md }),
-    });
-    msg.textContent = "added.";
-    ["ch-slug","ch-title","ch-files","ch-briefing"].forEach(id => document.getElementById(id).value = "");
+    const payload = JSON.stringify({ slug, title, points, time_bonus_points, editable_files, briefing_md });
+    if (editingChallengeId) {
+      await api(`/challenges/${editingChallengeId}`, { method: "PATCH", body: payload });
+      msg.textContent = "updated.";
+    } else {
+      await api("/challenges", {
+        method: "POST",
+        body: JSON.stringify({ event_id: currentEventId, slug, title, points, time_bonus_points, editable_files, briefing_md }),
+      });
+      msg.textContent = "added.";
+    }
+    resetChallengeForm();
     loadChallenges();
   } catch (e) { msg.textContent = e.message; }
 }
 
+function startEditChallenge(id) {
+  const c = challengeRows.find(x => x.id === id);
+  if (!c) return;
+  editingChallengeId = c.id;
+  document.getElementById("ch-slug").value = c.slug;
+  document.getElementById("ch-title").value = c.title;
+  document.getElementById("ch-points").value = c.points;
+  document.getElementById("ch-bonus").value = c.time_bonus_points;
+  document.getElementById("ch-files").value = c.editable_files.join(", ");
+  document.getElementById("ch-briefing").value = c.briefing_md || "";
+  document.getElementById("ch-heading").textContent = "Edit Challenge";
+  document.getElementById("ch-save").textContent = "Save changes";
+  document.getElementById("ch-cancel").style.display = "inline-block";
+  document.getElementById("ch-create-msg").textContent = `editing “${c.title}”`;
+  document.getElementById("ch-slug").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function cancelEditChallenge() {
+  editingChallengeId = null;
+  resetChallengeForm();
+  document.getElementById("ch-create-msg").textContent = "";
+}
+
+function resetChallengeForm() {
+  editingChallengeId = null;
+  ["ch-slug", "ch-title", "ch-files", "ch-briefing"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("ch-points").value = "100";
+  document.getElementById("ch-bonus").value = "30";
+  document.getElementById("ch-heading").textContent = "Add Challenge";
+  document.getElementById("ch-save").textContent = "Add challenge";
+  document.getElementById("ch-cancel").style.display = "none";
+}
+
 async function loadChallenges() {
   if (!currentEventId) return;
-  const rows = await api(`/events/${currentEventId}/challenges`);
-  document.querySelector("#challenges-table tbody").innerHTML = rows.map(c => `
+  challengeRows = await api(`/events/${currentEventId}/challenges`);
+  document.querySelector("#challenges-table tbody").innerHTML = challengeRows.map(c => `
     <tr>
       <td>${c.slug}</td><td>${c.title}</td><td>${c.points}</td><td>${c.time_bonus_points}</td>
       <td class="muted">${c.editable_files.join(", ")}</td>
+      <td><button class="action" onclick="startEditChallenge('${c.id}')">edit</button></td>
       <td><button class="action danger" onclick="deleteChallenge('${c.id}')">delete</button></td>
-    </tr>`).join("") || `<tr><td colspan="6" class="muted">no challenges yet</td></tr>`;
+    </tr>`).join("") || `<tr><td colspan="7" class="muted">no challenges yet</td></tr>`;
 }
 
 async function deleteChallenge(id) {

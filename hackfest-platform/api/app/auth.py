@@ -30,16 +30,20 @@ async def get_current_team(creds: HTTPAuthorizationCredentials = Depends(bearer_
         payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGO])
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid or expired token")
-    if payload.get("role") != "team":
+    if payload.get("role") not in ("team", "user"):
         # An admin token should never be usable as a team token, or vice
         # versa — the "role" claim keeps the two scopes from bleeding into
         # each other even though they share a JWT secret and verification path.
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="not a team token")
-    return payload  # {"team_id": ..., "event_id": ..., "role": "team"}
+        # Per-user tokens carry the same team_id/event_id claims, so anything
+        # a team can do (submit, poll results), a logged-in member can too —
+        # rate limits stay per-team either way.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="not a team or user token")
+    return payload  # {"team_id": ..., "event_id": ..., "role": "team"|"user"}
 
 
-def create_admin_token() -> str:
+def create_admin_token(username: str = "admin") -> str:
     payload = {
+        "sub": username,
         "role": "admin",
         "exp": datetime.now(timezone.utc) + timedelta(hours=18),
     }
@@ -53,4 +57,28 @@ async def get_current_admin(creds: HTTPAuthorizationCredentials = Depends(bearer
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid or expired token")
     if payload.get("role") != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin access required")
+    return payload  # {"sub": admin username, "role": "admin"}
+
+
+def create_user_token(user_id: str, team_id: str, event_id: str, username: str) -> str:
+    payload = {
+        "sub": username,
+        "user_id": user_id,
+        "team_id": team_id,
+        "event_id": event_id,
+        "role": "user",
+        "exp": datetime.now(timezone.utc) + timedelta(hours=18),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
+async def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> dict:
+    """For endpoints that need the individual behind the team (e.g. /users/me),
+    unlike get_current_team which accepts team-shared and user tokens alike."""
+    try:
+        payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGO])
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid or expired token")
+    if payload.get("role") != "user":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="not a user token")
     return payload

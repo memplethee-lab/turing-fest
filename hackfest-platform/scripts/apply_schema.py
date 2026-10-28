@@ -1,11 +1,10 @@
 """
 Apply db/schema.sql to the Postgres instance at DATABASE_URL.
 
-For LOCAL setup only (idempotent, so it's safe to re-run). In production
-(Render + Neon) this is not needed: the api applies the schema itself at
-startup via api/app/bootstrap.py — Render free-tier services don't support
-preDeployCommand. To change the schema later, either ALTER manually or bump
-the check below / use a proper migration tool.
+For LOCAL setup only. schema.sql is fully idempotent (IF NOT EXISTS
+throughout), so this is safe to re-run and picks up newly added tables.
+In production the api bootstraps the schema itself at startup
+(see api/app/bootstrap.py).
 """
 import asyncio
 import os
@@ -37,15 +36,9 @@ def get_database_url() -> str:
 async def main() -> None:
     conn = await asyncpg.connect(get_database_url())
     try:
-        already = await conn.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='events')"
-        )
-        if already:
-            print("schema already applied, nothing to do")
-            return
         with open(SCHEMA_PATH, encoding="utf-8") as f:
             await conn.execute(f.read())
-        print("schema applied")
+        print("schema applied (idempotent)")
     finally:
         await conn.close()
 

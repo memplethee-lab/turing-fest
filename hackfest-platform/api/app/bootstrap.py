@@ -3,8 +3,10 @@ Idempotent schema bootstrap, run by the api at startup.
 
 Replaces the old Render preDeployCommand (which free-tier services don't
 support): Neon has no initdb script hook like the compose postgres image, so
-the api applies db/schema.sql itself on the first startup after a deploy.
-No-op once the tables exist, so subsequent redeploy/startups are cheap.
+the api applies db/schema.sql itself on every startup. The schema uses
+CREATE ... IF NOT EXISTS throughout, so re-running is cheap and — crucially —
+newly added tables (e.g. admins, users) get created on the next deploy even
+when the older tables already exist.
 """
 import asyncio
 import os
@@ -34,14 +36,8 @@ def _read_schema() -> str:
 async def _apply(db_url: str) -> None:
     conn = await asyncpg.connect(db_url)
     try:
-        already = await conn.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='events')"
-        )
-        if already:
-            print("schema already applied, nothing to do")
-            return
         await conn.execute(_read_schema())
-        print("schema applied")
+        print("schema applied (idempotent)")
     finally:
         await conn.close()
 
