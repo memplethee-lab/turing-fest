@@ -112,6 +112,33 @@
         <button id="ev-unfreeze" class="action" style="display:none;" onclick="unfreezeNow()">Unfreeze leaderboard</button>
         <p class="muted" id="ev-edit-msg"></p>
       </div>
+
+      <div class="panel">
+        <h2>Participant roster & registration mode</h2>
+        <div class="row">
+          <div>
+            <label>Registration mode</label>
+            <select id="ev-reg-mode" onchange="saveRegMode()">
+              <option value="open">Open — anyone may register</option>
+              <option value="closed">Closed — roster emails only</option>
+            </select>
+            <p class="muted">Switching to closed takes effect immediately. Existing accounts are unaffected.</p>
+          </div>
+          <div>
+            <label>Paste invited emails (one per line)</label>
+            <textarea id="roster-input" placeholder="person1@school.edu&#10;person2@school.edu" style="min-height:70px;"></textarea>
+            <div>
+              <button class="action" onclick="addRosterBulk()">Add emails</button>
+              <button class="action" onclick="loadRoster()">Refresh</button>
+            </div>
+          </div>
+        </div>
+        <p class="muted" id="roster-msg"></p>
+        <table id="roster-table">
+          <thead><tr><th>Email</th><th>Status</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
 
     <!-- CHALLENGES TAB -->
@@ -290,6 +317,10 @@ function onEventChange() {
   currentEventId = document.getElementById("event-select").value;
   cancelEditChallenge();  // don't keep editing a challenge owned by another event
   const ev = events.find(e => e.id === currentEventId);
+  if (ev) {
+    document.getElementById("ev-reg-mode").value = ev.registration_mode || "open";
+    loadRoster();
+  }
   const panel = document.getElementById("edit-event-panel");
   if (ev) {
     panel.style.display = "block";
@@ -347,6 +378,48 @@ async function unfreezeNow() {
     msg.textContent = "unfrozen — live leaderboard restored.";
     await loadEvents();
   } catch (e) { msg.textContent = e.message; }
+}
+
+async function saveRegMode() {
+  const mode = document.getElementById("ev-reg-mode").value;
+  if (!currentEventId) return;
+  try {
+    await api(`/events/${currentEventId}`, { method: "PATCH", body: JSON.stringify({ registration_mode: mode }) });
+    document.getElementById("roster-msg").textContent = `registration mode: ${mode}`;
+  } catch (e) { document.getElementById("roster-msg").textContent = e.message; }
+}
+
+async function loadRoster() {
+  if (!currentEventId) return;
+  try {
+    const rows = await api(`/events/${currentEventId}/roster`);
+    document.querySelector("#roster-table tbody").innerHTML = rows.map(r => `
+      <tr>
+        <td>${r.email}</td><td class="muted">${r.status}</td>
+        <td>${r.status === "unused" ? `<button class="action danger" onclick="deleteRosterEntry('${r.id}')">remove</button>` : ""}</td>
+      </tr>`).join("") || `<tr><td colspan="3" class="muted">roster empty — paste emails above</td></tr>`;
+  } catch { /* roster section stays stale on transient errors */ }
+}
+
+async function addRosterBulk() {
+  const msg = document.getElementById("roster-msg");
+  if (!currentEventId) { msg.textContent = "select an event first"; return; }
+  try {
+    const emails = document.getElementById("roster-input").value.split("\n");
+    const data = await api(`/events/${currentEventId}/roster`, { method: "POST", body: JSON.stringify({ emails }) });
+    msg.textContent = `${data.added} added, ${data.skipped_already_present} already present`
+      + (data.invalid_lines.length ? ` — invalid lines: ${data.invalid_lines.join(", ")}` : "");
+    document.getElementById("roster-input").value = "";
+    loadRoster();
+  } catch (e) { msg.textContent = e.message; }
+}
+
+async function deleteRosterEntry(id) {
+  if (!confirm("Remove this unused email from the roster?")) return;
+  try {
+    await api(`/events/${currentEventId}/roster/${id}`, { method: "DELETE" });
+    loadRoster();
+  } catch (e) { document.getElementById("roster-msg").textContent = e.message; }
 }
 
 async function freezeNow() {

@@ -122,6 +122,7 @@ class EventPatch(BaseModel):
     start_at: datetime | None = None
     end_at: datetime | None = None
     freeze_at: datetime | None = None
+    registration_mode: str | None = None
 
 
 class ChallengePatch(BaseModel):
@@ -152,13 +153,14 @@ async def list_events(admin=Depends(get_current_admin)):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, name, start_at, end_at, freeze_at FROM events ORDER BY start_at DESC"
+            "SELECT id, name, start_at, end_at, freeze_at, registration_mode FROM events ORDER BY start_at DESC"
         )
         return [
             {
                 "id": str(r["id"]), "name": r["name"],
                 "start_at": r["start_at"].isoformat(), "end_at": r["end_at"].isoformat(),
                 "freeze_at": r["freeze_at"].isoformat() if r["freeze_at"] else None,
+                "registration_mode": r["registration_mode"],
             }
             for r in rows
         ]
@@ -168,6 +170,8 @@ async def list_events(admin=Depends(get_current_admin)):
 async def update_event(event_id: str, body: EventPatch, admin=Depends(get_current_admin)):
     # Build the SET clause from whichever fields were actually supplied, so
     # e.g. extending end_at mid-event doesn't require resending everything.
+    if body.registration_mode is not None and body.registration_mode not in ("open", "closed"):
+        raise HTTPException(400, "registration_mode must be 'open' or 'closed'")
     fields, values = [], []
     for i, (key, val) in enumerate(body.model_dump(exclude_unset=True).items(), start=1):
         fields.append(f"{key} = ${i}")
@@ -182,6 +186,97 @@ async def update_event(event_id: str, body: EventPatch, admin=Depends(get_curren
         )
         if result == "UPDATE 0":
             raise HTTPException(404, "no such event")
+    return {"ok": True}
+
+
+# ---------- participant roster (closed registration) ----------
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _normalize_email(raw: str) -> str | None:
+    email = raw.strip().lower().removeprefix("mailto:")
+    return email if email and _EMAIL_RE.match(email) else None
+
+
+class RosterBulkIn(BaseModel):
+    emails: list[str]
+
+
+@router.post("/events/{event_id}/roster")
+async def bulk_add_roster(event_id: str, body: RosterBulkIn, admin=Depends(get_current_admin)):
+    """Paste invited participants' emails (one per line). Duplicates (in the
+    paste or already in the roster) are collapsed; invalid lines are reported.
+    Claims are untouched by re-pasting."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM events WHERE id=$1", event_id):
+            raise HTTPException(404, "no such event")
+        valid, invalid = [], []
+        seen = set()
+        for raw in body.emails:
+            email = _normalize_email(raw)
+            if not email or email in seen:
+                if raw.strip():
+                    invalid.append(raw.strip())
+                continue
+            seen.add(email)
+            valid.append(email)
+        added_list = await conn.executemany(
+            """
+            INSERT INTO roster (event_id, email) VALUES ($1, $2)
+            ON CONFLICT (event_id, email) DO NOTHING
+            """,
+            [(event_id, e) for e in valid],
+        )
+        added = sum(1 for s in added_list if s == "INSERT 0 1")
+        return {
+            "added": added,
+            "skipped_already_present": len(valid) - added,
+            "invalid_lines": invalid[:20],
+        }
+
+
+@router.get("/events/{event_id}/roster")
+async def list_roster(event_id: str, admin=Depends(get_current_admin)):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT r.id, r.email, r.claimed_by_team_id, r.created_at,
+                   t.name AS team_name
+            FROM roster r
+            LEFT JOIN teams t ON t.id = r.claimed_by_team_id
+            WHERE r.event_id=$1
+            ORDER BY r.email
+            """,
+            event_id,
+        )
+        return [
+            {
+                "id": str(r["id"]),
+                "email": r["email"],
+                "status": (f"team: {r['team_name']}" if r["claimed_by_team_id"] else "unused"),
+                "created_at": r["created_at"].isoformat(),
+            }
+            for r in rows
+        ]
+
+
+@router.delete("/events/{event_id}/roster/{entry_id}")
+async def remove_roster_entry(event_id: str, entry_id: str, admin=Depends(get_current_admin)):
+    """Only unused entries can be removed — claimed ones are history you can
+    audit. To free a claimed email, re-point it in SQL (or dismiss the team)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT claimed_by_team_id FROM roster WHERE id=$1 AND event_id=$2", entry_id, event_id
+        )
+        if not row:
+            raise HTTPException(404, "no such roster entry")
+        if row["claimed_by_team_id"]:
+            raise HTTPException(400, "entry already claimed by a team — unused entries can only be removed")
+        await conn.execute("DELETE FROM roster WHERE id=$1", entry_id)
     return {"ok": True}
 
 

@@ -94,3 +94,20 @@ CREATE TABLE IF NOT EXISTS challenge_files (
     UNIQUE (challenge_id, filename)
 );
 CREATE INDEX IF NOT EXISTS idx_challenge_files_challenge ON challenge_files(challenge_id);
+
+-- Closed registration: the organizer pastes invited participants' emails here
+-- (bulk). With events.registration_mode='closed', team and personal
+-- registration must present an unclaimed email from this table; a team that
+-- consumes an email keeps it reusable by its own members' accounts.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS registration_mode TEXT NOT NULL DEFAULT 'open';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+
+CREATE TABLE IF NOT EXISTS roster (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,             -- normalized: lowercased, trimmed
+    claimed_by_team_id UUID REFERENCES teams(id),  -- team that consumed the invite (NULL = unused)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (event_id, email)
+);
+CREATE INDEX IF NOT EXISTS idx_roster_event ON roster(event_id);

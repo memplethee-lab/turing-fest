@@ -143,6 +143,32 @@ so `POST /api/submissions` and the submission-status route accept either —
 rate limits stay **per team** either way, so one eager member can't burn the
 team's cooldown faster than the team itself could.
 
+### Closed registration (invite roster)
+
+By default registration is **open** — anyone with the event id can create a
+team. For closed events:
+
+1. **Admin → Events → Participant roster**: paste the invited emails (one per
+   line, `POST /api/admin/events/{id}/roster`; duplicates and malformed lines
+   are reported back). The table shows each email as `unused`,
+   `team: <name>`, or registered-user status.
+2. Flip **Registration mode** to `closed`
+   (`PATCH /api/admin/events/{id}` with `{registration_mode: "closed"}`).
+3. From then on **both** registration paths demand a roster email:
+   - `POST /api/teams/register` — `{..., email}` claims one unused invite
+     atomically (two parties racing for the same email get a single winner;
+     the loser gets a 403).
+   - `POST /api/users/register` — `{..., email}` must be **unused or already
+     claimed by that same team** (so a captain can register their own personal
+     account with the email they used to create the team), and no two users
+     in an event can bind the same email.
+4. Deleting a claimed entry is blocked (claims are audit history); only
+   `unused` entries are removable. Teams/users registered before the switch
+   stay valid — closing registration never locks existing accounts out.
+
+Emails are normalized (trimmed, lowercased, `mailto:`-stripped) on both the
+bulk paste and at claim time, so `Person@School.edu` matches its roster twin.
+
 ## Participant workspace (side-by-side editor)
 
 `http://localhost/workspace.html` (or `/workspace.html` on Render) is the
@@ -285,6 +311,10 @@ write the Dockerfile for that language's runtime.
   `*`). With the stock nginx setup the frontend is same-origin, so you can
   leave it alone; set it to your real frontend origin if you host the pages
   on a different domain.
+- **Registration defaults to open.** For a closed event, paste the invited
+  emails into the roster and flip the event's registration mode to `closed`
+  — see "Closed registration" above. Both team and personal registration
+  then require an unclaimed roster email; existing accounts stay valid.
 
 ## Not built yet (left for you)
 

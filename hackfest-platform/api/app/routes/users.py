@@ -27,6 +27,7 @@ class UserRegisterIn(BaseModel):
     team_password: str   # the team's shared password — proves membership
     username: str
     password: str
+    email: str | None = None  # required in closed-registration mode
 
 
 class UserLoginIn(BaseModel):
@@ -44,10 +45,36 @@ async def register(body: UserRegisterIn):
         )
         if not team or not verify_password(body.team_password, team["password_hash"]):
             raise HTTPException(401, "bad team name or password")
+        mode = await conn.fetchval("SELECT registration_mode FROM events WHERE id=$1", body.event_id)
+        email = body.email.strip().lower() if body.email else None
+        if mode == "closed":
+            if not email:
+                raise HTTPException(400, "registration is closed for this event — provide your invited email")
+            claimed = await conn.execute(
+                """
+                UPDATE roster SET claimed_by_team_id=$1
+                WHERE event_id=$2 AND email=$3
+                  AND (claimed_by_team_id IS NULL OR claimed_by_team_id=$1)
+                """,
+                team["id"], body.event_id, email,
+            )
+            if claimed == "UPDATE 0":
+                raise HTTPException(
+                    403, "that email is not on this event's roster, or it was already used by a different team"
+                )
+            taken = await conn.fetchval(
+                """
+                SELECT 1 FROM users u JOIN teams t ON t.id=u.team_id
+                WHERE t.event_id=$1 AND u.email=$2
+                """,
+                body.event_id, email,
+            )
+            if taken:
+                raise HTTPException(409, "email already registered for a user in this event")
         try:
             row = await conn.fetchrow(
-                "INSERT INTO users (username, password_hash, team_id) VALUES ($1, $2, $3) RETURNING id",
-                body.username, hash_password(body.password), team["id"],
+                "INSERT INTO users (username, password_hash, team_id, email) VALUES ($1, $2, $3, $4) RETURNING id",
+                body.username, hash_password(body.password), team["id"], email,
             )
         except asyncpg.UniqueViolationError:
             raise HTTPException(409, "username already taken")
