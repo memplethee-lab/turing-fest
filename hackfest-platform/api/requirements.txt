@@ -5,5 +5,10 @@ redis==5.0.8
 pydantic==2.9.2
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+# Pin the bcrypt backend: 5.x removed module metadata + strictens the 72-byte
+# input rule, and passlib 1.7.4's backend self-check then raises on EVERY
+# hash/verify ("password cannot be longer than 72 bytes"). 4.0.1 is the last
+# fully compatible release.
+bcrypt==4.0.1
 sse-starlette==2.1.3
 PyYAML==6.0.2
