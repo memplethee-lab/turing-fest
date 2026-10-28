@@ -10,12 +10,14 @@
 # Run the worker on a host that has Docker (VPS / your own machine) against
 # the same Neon DATABASE_URL + the Key Value EXTERNAL URL — see README "Deploying to Render".
 #
-# Paths below are relative to the repo root, so keep render.yaml at the root
-# of the repository (i.e. the hackfest-platform/ directory is the repo root).
+# Paths below are resolved relative to each service's rootDir (see Render
+# monorepo docs), which is set to hackfest-platform/ since the repo root
+# (turing-fest) contains the project as a subdirectory.
 
 services:
   - type: web
     name: hackfest-api
+    rootDir: hackfest-platform
     runtime: docker
     dockerfilePath: ./api/Dockerfile.render
     dockerContext: .
@@ -59,6 +61,7 @@ services:
 
   - type: web
     name: hackfest-frontend
+    rootDir: hackfest-platform
     runtime: docker
     dockerfilePath: ./frontend/Dockerfile.render
     dockerContext: ./frontend

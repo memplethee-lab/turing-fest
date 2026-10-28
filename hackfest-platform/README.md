@@ -30,9 +30,9 @@ that does have Docker, against the same Neon database + Render's Redis.
 
 One-time setup:
 
-1. Push this directory (`hackfest-platform/`) as the **root of a GitHub repo**
-   — Blueprint paths are relative to the repo root, so `render.yaml` must sit
-   at that root.
+1. Push this repo to GitHub. The Blueprint (`hackfest-platform/render.yaml`)
+   sets `rootDir: hackfest-platform` on each service, so `dockerfilePath` and
+   `dockerContext` resolve inside that subdirectory even from the repo root.
 2. In Render, create a **Blueprint** from that repo. It will provision:
    - `hackfest-api` (Docker, `api/Dockerfile.render`) with `/health` checks
    - `hackfest-frontend` (Docker, `frontend/Dockerfile.render`) — nginx
