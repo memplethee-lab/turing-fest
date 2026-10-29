@@ -1,3 +1,4 @@
+import asyncpg
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
@@ -82,6 +83,13 @@ async def login(body: UserLoginIn):
     pool = await get_pool()
     async with pool.acquire() as conn:
         if body.email:
+            invited = await conn.fetchval(
+                "SELECT 1 FROM roster WHERE event_id=$1 AND LOWER(email) = LOWER($2)",
+                body.event_id,
+                body.email.strip().lower(),
+            )
+            if not invited:
+                raise HTTPException(403, "this email is not on the event roster")
             row = await conn.fetchrow(
                 """
                 SELECT u.id, u.team_id, t.event_id, u.password_hash, u.username, u.email
