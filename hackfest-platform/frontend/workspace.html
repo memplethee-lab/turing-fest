@@ -25,7 +25,6 @@
   label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0.6rem 0 0.25rem; }
   input, select, textarea { width: 100%; background: #0d0f13; border: 1px solid var(--border); color: var(--text); padding: 0.5rem 0.6rem; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
   button.action { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 0.5rem 1rem; cursor: pointer; font-size: 0.85rem; margin-top: 0.6rem; }
-  button.action:hover { filter: brightness(1.08); }
   button.danger { color: var(--bad); border-color: var(--bad); background: #3a2323; }
   button:disabled { opacity: 0.45; cursor: not-allowed; }
   .muted { color: var(--muted); font-size: 0.8rem; }
@@ -61,14 +60,14 @@
   <div class="panel">
     <h2>Participant login</h2>
     <label>Event ID</label>
-    <input id="event-id" placeholder="Event ID is auto-selected for this event" />
-    <label>Email</label>
+    <input id="event-id" placeholder="Paste the event ID from your invite" />
+    <label>Invited email</label>
     <input id="email" type="email" placeholder="you@example.com" />
     <label>Password</label>
-    <input id="pass" type="password" placeholder="Your invited password" onkeydown="if(event.key==='Enter') doLogin()" />
-    <button class="action" onclick="doLogin()">Enter workspace</button>
+    <input id="pass" type="password" onkeydown="if(event.key==='Enter') doLogin()" />
+    <button class="action" onclick="doLogin()">Open workspace</button>
     <p class="muted" id="login-msg"></p>
-    <p class="muted">Access is limited to invited participants. If you were not added by the organizers, ask them to add your email first.</p>
+    <p class="muted">Use the exact email and password assigned to your event invite.</p>
   </div>
 </div>
 
@@ -123,24 +122,12 @@ const cm = CodeMirror.fromTextArea(document.getElementById("code"), {
 
 const API = "/api";
 let token = localStorage.getItem("hackfest_token");
-let me = null;            // {kind: "user", name, event_id, team_id}
+let me = null;
 let challengeList = [];
-let currentChallenge = null;   // {slug, title, ...}
-let startFiles = {};           // {filename: originalContent}
+let currentChallenge = null;
+let startFiles = {};
 let openFile = null;
 let submitWatch = null;
-
-const autoEventId = new URLSearchParams(location.search).get("event_id") || localStorage.getItem("hackfest_event_id") || "";
-
-function setAutoEventId() {
-  const el = document.getElementById("event-id");
-  if (!el) return;
-  if (autoEventId) {
-    el.value = autoEventId;
-    el.readOnly = true;
-    el.title = "Event ID is pre-selected for this event";
-  }
-}
 
 function headers() {
   return { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
@@ -158,7 +145,6 @@ const esc = s => String(s ?? "").replace(/[&<>\"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const escBrief = s => { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; };
 
-// minimal markdown render (enough for briefings; never trusts raw HTML)
 function briefMarkdown(md) {
   const lines = escBrief(md).split("\n");
   let out = "", inCode = false, codeBuf = [];
@@ -173,29 +159,37 @@ function briefMarkdown(md) {
   return out;
 }
 
-// ---------- auth ----------
 async function doLogin() {
   const msg = document.getElementById("login-msg");
   try {
-    const eventId = (document.getElementById("event-id").value || autoEventId).trim();
-    const email = document.getElementById("email").value.trim();
+    const event_id = document.getElementById("event-id").value.trim();
+    const email = document.getElementById("email").value.trim().toLowerCase();
     const pass = document.getElementById("pass").value;
-    if (!eventId || !email || !pass) { msg.textContent = "fill in all fields"; return; }
-
+    if (!event_id || !email || !pass) {
+      msg.textContent = "enter event ID, invited email, and password";
+      return;
+    }
     const r = await fetch(`${API}/users/login`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event_id: eventId, email, password: pass }),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event_id, email, password: pass }),
     });
-    if (!r.ok) { let d = "login failed"; try { d = (await r.json()).detail || d; } catch { /* non-json */ } throw new Error(d); }
+    if (!r.ok) {
+      let d = "login failed";
+      try { d = (await r.json()).detail || d; } catch { /* non-json */ }
+      throw new Error(d);
+    }
     const data = await r.json();
     token = data.token;
     localStorage.setItem("hackfest_token", token);
-    localStorage.setItem("hackfest_event_id", eventId);
-    me = { kind: "user", name: email, event_id: eventId, team_id: data.team_id != null ? String(data.team_id) : null };
+    localStorage.setItem("hackfest_event_id", event_id);
+    me = { kind: "user", email, event_id, user_id: data.user_id, team_id: data.team_id };
     document.getElementById("login-screen").style.display = "none";
     document.getElementById("app").style.display = "block";
     loadWorkspace();
-  } catch (e) { msg.textContent = capMessage(e.message); }
+  } catch (e) {
+    msg.textContent = capMessage(e.message);
+  }
 }
 
 function doLogout() {
@@ -207,12 +201,11 @@ function doLogout() {
 }
 const capMessage = m => String(m || "").slice(0, 160);
 
-// ---------- workspace ----------
-let eventWindow = null; // {start_at, end_at}
+let eventWindow = null;
 let timerHandle = null;
 
 async function loadWorkspace() {
-  const list = await api("/challenges");   // {status, start_at, end_at, challenges}
+  const list = await api("/challenges");
   eventWindow = { start_at: list.start_at && new Date(list.start_at), end_at: list.end_at && new Date(list.end_at), status: list.status };
   challengeList = list.challenges || [];
   const sel = document.getElementById("challenge-select");
@@ -244,7 +237,6 @@ function tabsBar() {
 }
 
 function editorContents() {
-  // current buffers: the active file's live CodeMirror doc + untouched others
   const out = Object.assign({}, startFiles);
   if (openFile != null) out[openFile] = cm.getValue();
   return out;
@@ -324,7 +316,6 @@ cm.on("change", () => {
   draftTimer = setTimeout(saveDraft, 1500);
 });
 
-// ---------- submit & status ----------
 async function doSubmit() {
   if (!currentChallenge || !openFile) return;
   const btn = document.getElementById("submit-btn");
@@ -361,7 +352,6 @@ function watchSubmission(id) {
   }, 2000);
 }
 
-// ---------- pane divider ----------
 (function initDivider() {
   const divider = document.getElementById("divider");
   const setCols = pct => { document.getElementById("split").style.gridTemplateColumns = `${pct}% ${100 - pct}%`; };
@@ -371,7 +361,10 @@ function watchSubmission(id) {
   window.addEventListener("mouseup", () => { if (dragging) { dragging = false; cm.refresh(); } });
 })();
 
-setAutoEventId();
+const savedEventId = localStorage.getItem("hackfest_event_id");
+if (savedEventId) {
+  document.getElementById("event-id").value = savedEventId;
+}
 
 if (token) {
   document.getElementById("login-screen").style.display = "none";
@@ -382,7 +375,6 @@ if (token) {
   });
 } else {
   document.getElementById("login-screen").style.display = "block";
-  setAutoEventId();
 }
 </script>
 </body>
