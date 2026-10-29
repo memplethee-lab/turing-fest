@@ -36,12 +36,31 @@ async def get_leaderboard(event_id: str, limit: int = 100):
 
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT id, name FROM teams WHERE event_id=$1", event_id)
+        # Scores live on the team (see worker.award_solve). Participants who
+        # signed up with their roster email each have a personal team, so a
+        # row here is one participant unless several people opted to share a
+        # team; `members` tells the UI which is which.
+        rows = await conn.fetch(
+            """
+            SELECT t.id, t.name, COUNT(u.id) AS members
+            FROM teams t
+            LEFT JOIN users u ON u.team_id = t.id
+            WHERE t.event_id = $1
+            GROUP BY t.id, t.name
+            """,
+            event_id,
+        )
         names = {str(row["id"]): row["name"] for row in rows}
+        members = {str(row["id"]): int(row["members"]) for row in rows}
 
     return {
         "entries": [
-            {"team_id": team_id, "team_name": names.get(team_id, "?"), "score": score}
+            {
+                "team_id": team_id,
+                "team_name": names.get(team_id, "?"),
+                "members": members.get(team_id, 0),
+                "score": score,
+            }
             for team_id, score in entries
         ],
         "frozen": key.endswith(":frozen"),

@@ -16,7 +16,7 @@
 <body>
   <h1>🏆 Leaderboard <span id="frozen-badge" style="display:none; font-size:0.9rem; color:#60a5fa; border:1px solid #60a5fa; border-radius:4px; padding:0.1rem 0.5rem; vertical-align:middle;">FROZEN</span></h1>
   <table>
-    <thead><tr><th class="rank">#</th><th>Team</th><th>Score</th></tr></thead>
+    <thead><tr><th class="rank">#</th><th>Participant</th><th>Score</th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
 
@@ -31,22 +31,38 @@
       document.getElementById("frozen-badge").style.display = payload.frozen ? "inline" : "none";
     });
 
-    let teamNames = {};
+    let entrants = {};
     async function loadNames() {
       const res = await fetch(`/api/leaderboard/${EVENT_ID}`);
       const data = await res.json();
-      for (const entry of data.entries) teamNames[entry.team_id] = entry.team_name;
+      for (const entry of data.entries) {
+        entrants[entry.team_id] = { name: entry.team_name, members: entry.members || 0 };
+      }
     }
     loadNames();
-    setInterval(loadNames, 10000); // refresh name map occasionally in case of new teams
+    setInterval(loadNames, 10000); // refresh name map occasionally in case of new signups
 
     function render(entries) {
       const rows = document.getElementById("rows");
       rows.innerHTML = "";
       entries.forEach(([teamId, score], i) => {
         const points = Math.floor(score / 1_000_000_000);
+        const who = entrants[teamId];
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td class="rank">${i + 1}</td><td>${teamNames[teamId] || teamId}</td><td>${points}</td>`;
+        const rank = document.createElement("td");
+        rank.className = "rank";
+        rank.textContent = i + 1;
+        const name = document.createElement("td");
+        name.textContent = who ? who.name : teamId;
+        if (who && who.members > 1) {
+          const tag = document.createElement("span");
+          tag.style.cssText = "color:#9aa4b2; font-size:0.8rem; margin-left:0.4rem;";
+          tag.textContent = `team of ${who.members}`;
+          name.appendChild(tag);
+        }
+        const pts = document.createElement("td");
+        pts.textContent = points;
+        tr.append(rank, name, pts);
         rows.appendChild(tr);
       });
     }

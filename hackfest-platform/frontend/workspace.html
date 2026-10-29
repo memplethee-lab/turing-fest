@@ -58,19 +58,23 @@
 
 <div id="login-screen">
   <div class="panel">
-    <h2>Team login</h2>
-    <label>Log in as</label>
-    <select id="who">
-      <option value="team">Team (shared name + password)</option>
-      <option value="user">Personal account (username)</option>
-    </select>
-    <label id="name-label">Team name</label>
-    <input id="name" />
+    <h2>Participant sign-in</h2>
+    <p class="muted" id="event-line">checking event…</p>
+    <label>Email</label>
+    <input id="email" type="email" autocomplete="username" placeholder="the email your organizer registered"
+           onkeydown="if(event.key==='Enter') authSubmit()" />
     <label>Password</label>
-    <input id="pass" type="password" onkeydown="if(event.key==='Enter') doLogin()" />
-    <button class="action" onclick="doLogin()">Log in</button>
+    <input id="pass" type="password" autocomplete="current-password"
+           onkeydown="if(event.key==='Enter') authSubmit()" />
+    <div id="signup-extra" style="display:none;">
+      <label>Display name (shown on the leaderboard)</label>
+      <input id="display-name" placeholder="leave blank to use your email's first half"
+             onkeydown="if(event.key==='Enter') authSubmit()" />
+    </div>
+    <button class="action" id="auth-btn" onclick="authSubmit()">Sign in</button>
     <p class="muted" id="login-msg"></p>
-    <p class="muted">No account yet? <a href="#" onclick="doRegister(event)" style="color:var(--accent)">Register a team</a></p>
+    <p class="muted">First time? <a href="#" onclick="toggleSignup(event)" style="color:var(--accent)">Create your account</a>
+      with the email the organizer added to the participant list.</p>
   </div>
 </div>
 
@@ -78,7 +82,7 @@
   <header>
     <h1>🛠 Hackfest Workspace</h1>
     <span id="timer" title="Times from the server; enforcement is server-side"></span>
-    <a href="/" target="_blank">Leaderboard ↗</a>
+    <a id="leaderboard-link" href="/" target="_blank">Leaderboard ↗</a>
     <button class="action" style="margin:0;" onclick="doLogout()">Log out</button>
   </header>
   <div id="split">
@@ -131,6 +135,7 @@ let currentChallenge = null;   // {slug, title, ...}
 let startFiles = {};           // {filename: originalContent}
 let openFile = null;
 let submitWatch = null;
+let myEventId = null;      // so the leaderboard link points at the right event
 
 function headers() {
   return { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
@@ -164,45 +169,63 @@ function briefMarkdown(md) {
 }
 
 // ---------- auth ----------
-async function doLogin() {
-  const msg = document.getElementById("login-msg");
+// Participants sign in with the email on the organizer's roster — the same
+// identity the admin added. First sign-in is "Create your account", which
+// also gives them a personal team behind the scenes.
+let signupMode = false;
+
+async function loadEventLine() {
+  const el = document.getElementById("event-line");
   try {
-    const who = document.getElementById("who").value;
-    const name = document.getElementById("name").value.trim();
-    const pass = document.getElementById("pass").value;
-    if (!name || !pass) { msg.textContent = "fill in all fields"; return; }
-    const url = who === "team" ? "/teams/login" : "/users/login";
-    const r = await fetch(`${API}${url}`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(who === "team" ? { name, password: pass } : { username: name, password: pass }),
-    });
-    if (!r.ok) { let d = "login failed"; try { d = (await r.json()).detail || d; } catch { /* non-json */ } throw new Error(d); }
-    const data = await r.json();
-    token = data.token;
-    localStorage.setItem("hackfest_token", token);
-    me = { kind: who, name, team_id: data.team_id != null ? String(data.team_id) : null };
-    document.getElementById("login-screen").style.display = "none";
-    document.getElementById("app").style.display = "block";
-    loadWorkspace();
-  } catch (e) { msg.textContent = capMessage(e.message); }
+    const r = await fetch(`${API}/events/current`);
+    if (!r.ok) { el.textContent = "no event configured yet — ask the organizers"; return; }
+    const e = await r.json();
+    const when = e.status === "running" ? "happening now"
+      : e.status === "not_started" ? `starts ${new Date(e.start_at).toLocaleString()}`
+      : `ended ${new Date(e.end_at).toLocaleString()}`;
+    el.textContent = `${e.name} — ${when}${e.registration_mode === "closed" ? " · invite-only" : ""}`;
+  } catch { el.textContent = ""; }
+}
+loadEventLine();
+
+function toggleSignup(ev) {
+  if (ev) ev.preventDefault();
+  signupMode = !signupMode;
+  document.getElementById("signup-extra").style.display = signupMode ? "block" : "none";
+  document.getElementById("auth-btn").textContent = signupMode ? "Create account" : "Sign in";
+  document.getElementById("login-msg").textContent = signupMode
+    ? "Use the email your organizer added to the participant list."
+    : "";
 }
 
-async function doRegister(ev) {
-  ev.preventDefault(); ev.stopPropagation();
+async function authSubmit() {
   const msg = document.getElementById("login-msg");
+  const btn = document.getElementById("auth-btn");
+  const email = document.getElementById("email").value.trim();
+  const pass = document.getElementById("pass").value;
+  if (!email || !pass) { msg.textContent = "fill in your email and password"; return; }
+  btn.disabled = true;
   try {
-    const name = document.getElementById("name").value.trim();
-    const pass = document.getElementById("pass").value;
-    if (!name || !pass) { msg.textContent = "fill in team name and password first"; return; }
-    const event_id = prompt("Event ID (from the organizers) — pastes it into the register call");
-    if (!event_id) return;
-    const r = await fetch(`${API}/teams/register`, {
+    const url = signupMode ? "/users/signup" : "/users/login";
+    const payload = signupMode
+      ? { email, password: pass, display_name: document.getElementById("display-name").value.trim() || null }
+      : { login: email, password: pass };
+    const r = await fetch(`${API}${url}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event_id, name, password: pass }),
+      body: JSON.stringify(payload),
     });
-    if (!r.ok) { let d = "registration failed"; try { d = (await r.json()).detail || d; } catch { /* non-json */ } throw new Error(d); }
-    msg.textContent = `registered with event ${event_id.slice(0, 8)}… — now log in`;
-  } catch (e) { msg.textContent = capMessage(e.message); }
+    let data = {};
+    try { data = await r.json(); } catch { /* non-json error page */ }
+    if (!r.ok) throw new Error(data.detail || (signupMode ? "signup failed" : "login failed"));
+    token = data.token;
+    localStorage.setItem("hackfest_token", token);
+    me = { kind: "user", name: data.display_name || email, team_id: data.team_id != null ? String(data.team_id) : null };
+    document.getElementById("login-screen").style.display = "none";
+    document.getElementById("app").style.display = "block";
+    await loadWorkspace();
+  } catch (e) {
+    msg.textContent = capMessage(e.message);
+  } finally { btn.disabled = false; }
 }
 
 function doLogout() {
@@ -218,6 +241,7 @@ let eventWindow = null; // {start_at, end_at}
 let timerHandle = null;
 
 async function loadWorkspace() {
+  await loadIdentity();
   const list = await api("/challenges");   // {status, start_at, end_at, challenges}
   eventWindow = { start_at: list.start_at && new Date(list.start_at), end_at: list.end_at && new Date(list.end_at), status: list.status };
   challengeList = list.challenges || [];
@@ -231,6 +255,22 @@ async function loadWorkspace() {
   const last = localStorage.getItem("hackfest_last_challenge");
   if (last && challengeList.some(c => c.slug === last)) { sel.value = last; }
   await pickChallenge();
+}
+
+// Best-effort: who am I (display name) and which event, so the leaderboard
+// link deep-links instead of showing an empty board. A legacy team token has
+// no user row; that is not worth logging anyone out over.
+async function loadIdentity() {
+  try {
+    const r = await fetch(`${API}/users/me`, { headers: headers() });
+    if (!r.ok) return;
+    const u = await r.json();
+    myEventId = u.event_id || myEventId;
+    const self = (u.members || []).find(m => m.username === u.username);
+    me = { kind: "user", name: (self && self.display_name) || u.username, team_id: u.team_id };
+    const link = document.getElementById("leaderboard-link");
+    if (myEventId) link.href = `/?event_id=${encodeURIComponent(myEventId)}`;
+  } catch { /* identity is cosmetic */ }
 }
 
 function updateTimer() {

@@ -256,7 +256,7 @@ async def list_roster(event_id: str, admin=Depends(get_current_admin)):
             {
                 "id": str(r["id"]),
                 "email": r["email"],
-                "status": (f"team: {r['team_name']}" if r["claimed_by_team_id"] else "unused"),
+                "status": (f"registered: {r['team_name']}" if r["claimed_by_team_id"] else "unused"),
                 "created_at": r["created_at"].isoformat(),
             }
             for r in rows

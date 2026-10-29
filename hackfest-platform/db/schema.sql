@@ -69,14 +69,17 @@ CREATE TABLE IF NOT EXISTS admins (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Per-user accounts. Each user belongs to exactly one team; team membership
--- is proven at registration with the team's shared password. Team-scoped
--- endpoints accept a user's token wherever they accept the team token.
+-- Per-user accounts. Each user belongs to exactly one team. A participant
+-- invited by email (see roster below) signs up with that email and gets a
+-- personal team, so a leaderboard row is one participant by default;
+-- joining a group team is optional. Team-scoped endpoints accept a user's
+-- token wherever they accept the team token.
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    username TEXT NOT NULL UNIQUE,
+    username TEXT NOT NULL UNIQUE,   -- the roster email: unambiguous login id
     password_hash TEXT NOT NULL,
     team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    display_name TEXT,               -- what the leaderboard shows
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -101,6 +104,8 @@ CREATE INDEX IF NOT EXISTS idx_challenge_files_challenge ON challenge_files(chal
 -- consumes an email keeps it reusable by its own members' accounts.
 ALTER TABLE events ADD COLUMN IF NOT EXISTS registration_mode TEXT NOT NULL DEFAULT 'open';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
+CREATE INDEX IF NOT EXISTS idx_users_email ON users (lower(email));
 
 CREATE TABLE IF NOT EXISTS roster (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
