@@ -21,15 +21,9 @@
   </table>
 
   <script>
-    // Change this to your real event id at deploy time.
-    const EVENT_ID = new URLSearchParams(location.search).get("event_id") || "REPLACE_WITH_EVENT_ID";
-
-    const source = new EventSource(`/api/leaderboard/${EVENT_ID}/stream`);
-    source.addEventListener("leaderboard", (e) => {
-      const payload = JSON.parse(e.data); // { entries: [[team_id, score], ...], frozen: bool }
-      render(payload.entries);
-      document.getElementById("frozen-badge").style.display = payload.frozen ? "inline" : "none";
-    });
+    // The event id can come from ?event_id= (the workspace links that way);
+    // otherwise the running event is used, so this page needs no hand edit.
+    let EVENT_ID = new URLSearchParams(location.search).get("event_id");
 
     let entrants = {};
     async function loadNames() {
@@ -39,8 +33,26 @@
         entrants[entry.team_id] = { name: entry.team_name, members: entry.members || 0 };
       }
     }
-    loadNames();
-    setInterval(loadNames, 10000); // refresh name map occasionally in case of new signups
+
+    async function init() {
+      if (!EVENT_ID) {
+        try {
+          const r = await fetch("/api/events/current");
+          if (!r.ok) { document.getElementById("rows").textContent = "no event set up yet"; return; }
+          EVENT_ID = (await r.json()).id;
+        } catch { return; }
+      }
+      await loadNames();
+      setInterval(loadNames, 10000); // refresh names as people sign up
+
+      const source = new EventSource(`/api/leaderboard/${EVENT_ID}/stream`);
+      source.addEventListener("leaderboard", (e) => {
+        const payload = JSON.parse(e.data); // { entries: [[team_id, score], ...], frozen: bool }
+        render(payload.entries);
+        document.getElementById("frozen-badge").style.display = payload.frozen ? "inline" : "none";
+      });
+    }
+    init();
 
     function render(entries) {
       const rows = document.getElementById("rows");
