@@ -61,11 +61,11 @@
   <div class="panel">
     <h2>Participant login</h2>
     <label>Event ID</label>
-    <input id="event-id" placeholder="Enter event ID shared by organizers" />
+    <input id="event-id" placeholder="Enter the event ID from organizers" />
     <label>Email</label>
     <input id="email" type="email" placeholder="you@example.com" />
     <label>Password</label>
-    <input id="pass" type="password" placeholder="Your invite password" onkeydown="if(event.key==='Enter') doLogin()" />
+    <input id="pass" type="password" placeholder="Your invited password" onkeydown="if(event.key==='Enter') doLogin()" />
     <button class="action" onclick="doLogin()">Enter workspace</button>
     <p class="muted" id="login-msg"></p>
     <p class="muted">Access is limited to invited participants. If you were not added by the organizers, ask them to add your email first.</p>
@@ -172,16 +172,16 @@ async function doLogin() {
 
     const r = await fetch(`${API}/users/login`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password: pass }),
+      body: JSON.stringify({ event_id: eventId, email, password: pass }),
     });
     if (!r.ok) { let d = "login failed"; try { d = (await r.json()).detail || d; } catch { /* non-json */ } throw new Error(d); }
     const data = await r.json();
     token = data.token;
     localStorage.setItem("hackfest_token", token);
+    localStorage.setItem("hackfest_event_id", eventId);
     me = { kind: "user", name: email, event_id: eventId, team_id: data.team_id != null ? String(data.team_id) : null };
     document.getElementById("login-screen").style.display = "none";
     document.getElementById("app").style.display = "block";
-    localStorage.setItem("hackfest_event_id", eventId);
     loadWorkspace();
   } catch (e) { msg.textContent = capMessage(e.message); }
 }
