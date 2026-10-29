@@ -12,6 +12,27 @@ def event_status(start_at: datetime, end_at: datetime) -> str:
         return "ended"
     return "running"
 
+
+@router.get("")
+async def list_events():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, start_at, end_at, freeze_at FROM events ORDER BY start_at DESC"
+        )
+        return [
+            {
+                "id": str(r["id"]),
+                "name": r["name"],
+                "start_at": r["start_at"].isoformat(),
+                "end_at": r["end_at"].isoformat(),
+                "freeze_at": r["freeze_at"].isoformat() if r["freeze_at"] else None,
+                "status": event_status(r["start_at"], r["end_at"]),
+            }
+            for r in rows
+        ]
+
+
 @router.get("/{event_id}")
 async def get_event(event_id: str):
     pool = await get_pool()
@@ -28,5 +49,5 @@ async def get_event(event_id: str):
             "end_at": row["end_at"].isoformat(),
             "freeze_at": row["freeze_at"].isoformat() if row["freeze_at"] else None,
             "status": event_status(row["start_at"], row["end_at"]),
-            "server_time": datetime.now(timezone.utc).isoformat(),  # clients should trust this, not their own clock
+            "server_time": datetime.now(timezone.utc).isoformat(),
         }
