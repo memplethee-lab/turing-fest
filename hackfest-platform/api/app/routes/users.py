@@ -1,15 +1,3 @@
-"""
-Per-user accounts layered on top of teams.
-
-Teams keep the shared name+password login (teams.py) — useful for scripting
-and as the "team secret" members share to prove membership. On top of that,
-individual users register with their own username/password attached to a
-team; their JWT carries the same team_id/event_id claims, so every
-team-scoped endpoint (submissions, results) accepts a user token unchanged.
-Rate limits remain per-team by design (anti-starvation is a team-level
-property).
-"""
-import asyncpg
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
@@ -31,7 +19,8 @@ class UserRegisterIn(BaseModel):
 
 
 class UserLoginIn(BaseModel):
-    username: str
+    username: str | None = None
+    email: str | None = None
     password: str
 
 
@@ -79,24 +68,29 @@ async def register(body: UserRegisterIn):
         except asyncpg.UniqueViolationError:
             raise HTTPException(409, "username already taken")
         token = create_user_token(str(row["id"]), str(team["id"]), body.event_id, body.username)
-        return {"token": token, "user_id": str(row["id"]), "team_id": str(team["id"])}
+        return {"token": token, "user_id": str(row["id"]), "team_id": str(team["id"]) }
 
 
 @router.post("/login")
 async def login(body: UserLoginIn):
+    identifier = (body.email or body.username or "").strip()
+    if not identifier:
+        raise HTTPException(400, "email or username is required")
+    email = identifier.lower() if "@" in identifier else None
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT u.id, u.team_id, t.event_id, u.password_hash
+            SELECT u.id, u.team_id, t.event_id, u.password_hash, u.username, u.email
             FROM users u JOIN teams t ON t.id = u.team_id
-            WHERE u.username = $1
+            WHERE LOWER(u.username) = LOWER($1)
+               OR (u.email IS NOT NULL AND LOWER(u.email) = LOWER($1))
             """,
-            body.username,
+            identifier,
         )
         if not row or not verify_password(body.password, row["password_hash"]):
             raise HTTPException(401, "bad username or password")
-        token = create_user_token(str(row["id"]), str(row["team_id"]), str(row["event_id"]), body.username)
+        token = create_user_token(str(row["id"]), str(row["team_id"]), str(row["event_id"]), row["username"])
         return {"token": token, "user_id": str(row["id"]), "team_id": str(row["team_id"])}
 
 
