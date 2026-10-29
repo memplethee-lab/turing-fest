@@ -447,6 +447,43 @@ async def delete_challenge(challenge_id: str, admin=Depends(get_current_admin)):
     return {"ok": True}
 
 
+# ---------- solutions (known-good fixed versions) ----------
+
+class ChallengeSolutionsIn(BaseModel):
+    solutions: dict[str, str]
+
+
+@router.get("/challenges/{challenge_id}/solutions")
+async def list_solutions(challenge_id: str, admin=Depends(get_current_admin)):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT id FROM challenges WHERE id=$1", challenge_id)
+        if not row:
+            raise HTTPException(404, "no such challenge")
+        files = await conn.fetch(
+            "SELECT filename, content FROM solutions WHERE challenge_id=$1 ORDER BY filename",
+            challenge_id,
+        )
+        return {r["filename"]: r["content"] for r in files}
+
+
+@router.put("/challenges/{challenge_id}/solutions")
+async def replace_solutions(challenge_id: str, body: ChallengeSolutionsIn,
+                            admin=Depends(get_current_admin)):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT id FROM challenges WHERE id=$1", challenge_id)
+        if not row:
+            raise HTTPException(404, "no such challenge")
+        await conn.execute("DELETE FROM solutions WHERE challenge_id=$1", challenge_id)
+        if body.solutions:
+            await conn.executemany(
+                "INSERT INTO solutions (challenge_id, filename, content) VALUES ($1,$2,$3)",
+                [(challenge_id, f, c) for f, c in body.solutions.items()],
+            )
+    return {"ok": True}
+
+
 # ---------- teams & scores ----------
 
 @router.get("/events/{event_id}/teams")

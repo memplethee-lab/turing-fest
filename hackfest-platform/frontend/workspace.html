@@ -482,16 +482,30 @@ cm.on("change", () => {
 async function doSubmit() {
   if (!currentChallenge || !openFile) return;
   if (eventWindow && eventWindow.status === "ended") {
-    // Ctrl+Enter reaches this even with Submit parked, so guard here too.
     const el = document.getElementById("sub-status");
     el.textContent = "this event has ended — submissions are closed";
     el.className = "status status-warn";
     return;
   }
+  const files = editorContents();
+  if (!files || Object.keys(files).length === 0) {
+    const el = document.getElementById("sub-status");
+    el.textContent = "no files to submit — pick a challenge first";
+    el.className = "status status-bad";
+    return;
+  }
+  // Sanity: every submitted file must be one of the challenge's editable files
+  const allowed = new Set((currentChallenge.editable_files || []).map(f => f.trim()));
+  const unexpected = Object.keys(files).filter(f => !allowed.has(f));
+  if (unexpected.length) {
+    const el = document.getElementById("sub-status");
+    el.textContent = "not an editable file: " + unexpected.join(", ");
+    el.className = "status status-bad";
+    return;
+  }
   const btn = document.getElementById("submit-btn");
   try {
     btn.disabled = true;
-    const files = editorContents();
     const res = await api("/submissions", {
       method: "POST",
       body: JSON.stringify({ challenge_slug: currentChallenge.slug, files }),

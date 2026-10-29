@@ -174,6 +174,23 @@
         <h2>Challenges in this event</h2>
         <table id="challenges-table"><thead><tr><th>Slug</th><th>Title</th><th>Points</th><th>Bonus</th><th>Files</th><th></th></tr></thead><tbody></tbody></table>
       </div>
+
+      <!-- SOLUTIONS PANEL (shows when editing a challenge) -->
+      <div class="panel" id="solutions-panel" style="display:none;">
+        <h2 id="solutions-heading">Solutions — Fixed Versions</h2>
+        <p class="muted">Paste the known-good fix for each editable file. These are never shipped to teams;
+        they're used to sanity-check a challenge before the event.</p>
+        <label>Solution file contents — one <code>=== filename ===</code> section per file</label>
+        <textarea id="solutions-blob" style="min-height:150px;" placeholder="=== Freshness.ts ===
+<fixed file content here>
+=== NonceStore.ts ===
+<fixed file content here>"></textarea>
+        <div>
+          <button class="action" onclick="saveSolutions()">Save solutions</button>
+          <button class="action" style="margin-left:0.4rem;" onclick="cancelEditSolutions()">Cancel</button>
+        </div>
+        <p class="muted" id="solutions-msg"></p>
+      </div>
     </section>
 
     <!-- TEAMS TAB -->
@@ -464,6 +481,9 @@ async function saveChallenge() {
     const briefing_md = document.getElementById("ch-briefing").value;
     const starting_files = parseStartFiles(document.getElementById("ch-files-blob").value);
     if (!slug || !title || !editable_files.length) { msg.textContent = "slug, title, and at least one editable file are required"; return; }
+    // Warn if starting files don't cover every editable file
+    const missing = editable_files.filter(f => !(f in starting_files));
+    if (missing.length) { msg.textContent = "starting files missing for: " + missing.join(", "); return; }
     const payload = { slug, title, points, time_bonus_points, editable_files, briefing_md };
     if (Object.keys(starting_files).length) payload.starting_files = starting_files;
     if (editingChallengeId) {
@@ -503,17 +523,21 @@ function startEditChallenge(id) {
       .join("\n");
     document.getElementById("ch-files-blob").value = blob;
   }).catch(() => { /* form still usable; saving re-seeds via the server's 400 */ });
+  loadSolutions(c.id);
+  document.getElementById("solutions-panel").style.display = "block";
 }
 
 function cancelEditChallenge() {
   editingChallengeId = null;
   resetChallengeForm();
+  cancelEditSolutions();
   document.getElementById("ch-create-msg").textContent = "";
+  document.getElementById("solutions-panel").style.display = "none";
 }
 
 function resetChallengeForm() {
   editingChallengeId = null;
-  ["ch-slug", "ch-title", "ch-files", "ch-briefing"].forEach(id => document.getElementById(id).value = "");
+  ["ch-slug", "ch-title", "ch-files", "ch-briefing", "ch-files-blob"].forEach(id => document.getElementById(id).value = "");
   document.getElementById("ch-points").value = "100";
   document.getElementById("ch-bonus").value = "30";
   document.getElementById("ch-heading").textContent = "Add Challenge";
@@ -531,12 +555,58 @@ async function loadChallenges() {
       <td><button class="action" onclick="startEditChallenge('${c.id}')">edit</button></td>
       <td><button class="action danger" onclick="deleteChallenge('${c.id}')">delete</button></td>
     </tr>`).join("") || `<tr><td colspan="7" class="muted">no challenges yet</td></tr>`;
+  document.getElementById("solutions-panel").style.display = "none";
 }
 
 async function deleteChallenge(id) {
   if (!confirm("Delete this challenge? Existing submissions for it are kept.")) return;
   await api(`/challenges/${id}`, { method: "DELETE" });
   loadChallenges();
+  cancelEditSolutions();
+}
+
+async function loadSolutions(challengeId) {
+  try {
+    const data = await api(`/challenges/${challengeId}/solutions`);
+    const blob = Object.entries(data || {})
+      .map(([f, content]) => `=== ${f} ===\n${content}`)
+      .join("\n");
+    document.getElementById("solutions-blob").value = blob;
+  } catch { /* solutions panel stays empty */ }
+}
+
+function parseSolutions(blob) {
+  const result = {};
+  let name = null, buf = [];
+  for (const line of blob.split("\n")) {
+    const m = /^===\s*(.+?)\s*===$/.exec(line.trim());
+    if (m) {
+      if (name !== null) result[name] = buf.join("\n");
+      name = m[1].trim(); buf = [];
+    } else if (name !== null) {
+      buf.push(line);
+    }
+  }
+  if (name !== null) result[name] = buf.join("\n");
+  return result;
+}
+
+async function saveSolutions() {
+  if (!editingChallengeId) return;
+  const msg = document.getElementById("solutions-msg");
+  try {
+    const solutions = parseSolutions(document.getElementById("solutions-blob").value);
+    await api(`/challenges/${editingChallengeId}/solutions`, {
+      method: "PUT",
+      body: JSON.stringify({ solutions }),
+    });
+    msg.textContent = "solutions saved.";
+  } catch (e) { msg.textContent = e.message; }
+}
+
+function cancelEditSolutions() {
+  document.getElementById("solutions-blob").value = "";
+  document.getElementById("solutions-msg").textContent = "";
 }
 
 async function loadTeams() {

@@ -99,6 +99,20 @@ CREATE TABLE IF NOT EXISTS challenge_files (
 );
 CREATE INDEX IF NOT EXISTS idx_challenge_files_challenge ON challenge_files(challenge_id);
 
+-- Solutions: the known-good fixed versions of each editable file.
+-- Kept out of the challenge image so teams never see them. Used by
+-- organizers to sanity-check a new challenge before the event (vulnerable
+-- files must FAIL hidden tests, solution files must PASS).
+CREATE TABLE IF NOT EXISTS solutions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    challenge_id UUID NOT NULL REFERENCES challenges(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (challenge_id, filename)
+);
+CREATE INDEX IF NOT EXISTS idx_solutions_challenge ON solutions(challenge_id);
+
 -- Closed registration: the organizer pastes invited participants' emails here
 -- (bulk). With events.registration_mode='closed', team and personal
 -- registration must present an unclaimed email from this table; a team that
