@@ -19,8 +19,9 @@ class UserRegisterIn(BaseModel):
 
 
 class UserLoginIn(BaseModel):
-    username: str | None = None
+    event_id: str
     email: str | None = None
+    username: str | None = None
     password: str
 
 
@@ -73,23 +74,35 @@ async def register(body: UserRegisterIn):
 
 @router.post("/login")
 async def login(body: UserLoginIn):
+    if not body.event_id:
+        raise HTTPException(400, "event_id is required")
     identifier = (body.email or body.username or "").strip()
     if not identifier:
         raise HTTPException(400, "email or username is required")
-    email = identifier.lower() if "@" in identifier else None
     pool = await get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT u.id, u.team_id, t.event_id, u.password_hash, u.username, u.email
-            FROM users u JOIN teams t ON t.id = u.team_id
-            WHERE LOWER(u.username) = LOWER($1)
-               OR (u.email IS NOT NULL AND LOWER(u.email) = LOWER($1))
-            """,
-            identifier,
-        )
+        if body.email:
+            row = await conn.fetchrow(
+                """
+                SELECT u.id, u.team_id, t.event_id, u.password_hash, u.username, u.email
+                FROM users u JOIN teams t ON t.id = u.team_id
+                WHERE t.event_id = $1
+                  AND LOWER(COALESCE(u.email, '')) = LOWER($2)
+                """,
+                body.event_id, body.email.strip().lower(),
+            )
+        else:
+            row = await conn.fetchrow(
+                """
+                SELECT u.id, u.team_id, t.event_id, u.password_hash, u.username, u.email
+                FROM users u JOIN teams t ON t.id = u.team_id
+                WHERE t.event_id = $1
+                  AND LOWER(u.username) = LOWER($2)
+                """,
+                body.event_id, identifier,
+            )
         if not row or not verify_password(body.password, row["password_hash"]):
-            raise HTTPException(401, "bad username or password")
+            raise HTTPException(401, "bad participant email or password")
         token = create_user_token(str(row["id"]), str(row["team_id"]), str(row["event_id"]), row["username"])
         return {"token": token, "user_id": str(row["id"]), "team_id": str(row["team_id"])}
 
