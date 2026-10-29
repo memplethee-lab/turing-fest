@@ -510,14 +510,19 @@ async def me(user=Depends(get_current_user)):
             """
             SELECT u.username, u.display_name, e.name AS event_name, e.start_at, e.end_at
             FROM users u JOIN events e ON e.id = u.event_id
-            WHERE u.id = $1
+            WHERE u.id = $1 AND u.event_id = $2
             """,
-            user["user_id"],
+            user["user_id"], user["event_id"],
         )
         team = await conn.fetchrow("SELECT name FROM teams WHERE id=$1", user["team_id"])
         members = await conn.fetch(
-            "SELECT display_name, created_at FROM users WHERE team_id=$1 ORDER BY created_at",
-            user["team_id"],
+            """
+            SELECT u.display_name, u.created_at
+            FROM users u JOIN teams t ON t.id = u.team_id
+            WHERE u.team_id = $1 AND u.event_id = $2
+            ORDER BY u.created_at
+            """,
+            user["team_id"], user["event_id"],
         )
         event = None
         if row:
