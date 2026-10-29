@@ -24,7 +24,8 @@
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }
   label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0.6rem 0 0.25rem; }
   input, select, textarea { width: 100%; background: #0d0f13; border: 1px solid var(--border); color: var(--text); padding: 0.5rem 0.6rem; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
-  button.action { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 0.5rem 1rem; cursor: pointer; font-size: 0.85rem; margin-top: 0.6rem; margin-right: 0.4rem; }
+  button.action { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 0.5rem 1rem; cursor: pointer; font-size: 0.85rem; margin-top: 0.6rem; }
+  button.action:hover { filter: brightness(1.08); }
   button.danger { color: var(--bad); border-color: var(--bad); background: #3a2323; }
   button:disabled { opacity: 0.45; cursor: not-allowed; }
   .muted { color: var(--muted); font-size: 0.8rem; }
@@ -58,19 +59,16 @@
 
 <div id="login-screen">
   <div class="panel">
-    <h2>Team login</h2>
-    <label>Log in as</label>
-    <select id="who">
-      <option value="team">Team (shared name + password)</option>
-      <option value="user">Personal account (username)</option>
-    </select>
-    <label id="name-label">Team name</label>
-    <input id="name" />
+    <h2>Participant login</h2>
+    <label>Event ID</label>
+    <input id="event-id" placeholder="Enter event ID shared by organizers" />
+    <label>Email</label>
+    <input id="email" type="email" placeholder="you@example.com" />
     <label>Password</label>
-    <input id="pass" type="password" onkeydown="if(event.key==='Enter') doLogin()" />
-    <button class="action" onclick="doLogin()">Log in</button>
+    <input id="pass" type="password" placeholder="Your invite password" onkeydown="if(event.key==='Enter') doLogin()" />
+    <button class="action" onclick="doLogin()">Enter workspace</button>
     <p class="muted" id="login-msg"></p>
-    <p class="muted">No account yet? <a href="#" onclick="doRegister(event)" style="color:var(--accent)">Register a team</a></p>
+    <p class="muted">Access is limited to invited participants. If you were not added by the organizers, ask them to add your email first.</p>
   </div>
 </div>
 
@@ -125,7 +123,7 @@ const cm = CodeMirror.fromTextArea(document.getElementById("code"), {
 
 const API = "/api";
 let token = localStorage.getItem("hackfest_token");
-let me = null;            // {kind: "team"|"user", name}
+let me = null;            // {kind: "user", name, event_id, team_id}
 let challengeList = [];
 let currentChallenge = null;   // {slug, title, ...}
 let startFiles = {};           // {filename: originalContent}
@@ -144,7 +142,7 @@ async function api(path, opts = {}) {
   return ct.includes("application/json") ? res.json() : res.text();
 }
 
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+const esc = s => String(s ?? "").replace(/[&<>\"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const escBrief = s => { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; };
 
@@ -167,46 +165,30 @@ function briefMarkdown(md) {
 async function doLogin() {
   const msg = document.getElementById("login-msg");
   try {
-    const who = document.getElementById("who").value;
-    const name = document.getElementById("name").value.trim();
+    const eventId = document.getElementById("event-id").value.trim();
+    const email = document.getElementById("email").value.trim();
     const pass = document.getElementById("pass").value;
-    if (!name || !pass) { msg.textContent = "fill in all fields"; return; }
-    const url = who === "team" ? "/teams/login" : "/users/login";
-    const r = await fetch(`${API}${url}`, {
+    if (!eventId || !email || !pass) { msg.textContent = "fill in all fields"; return; }
+
+    const r = await fetch(`${API}/users/login`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(who === "team" ? { name, password: pass } : { username: name, password: pass }),
+      body: JSON.stringify({ email, password: pass }),
     });
     if (!r.ok) { let d = "login failed"; try { d = (await r.json()).detail || d; } catch { /* non-json */ } throw new Error(d); }
     const data = await r.json();
     token = data.token;
     localStorage.setItem("hackfest_token", token);
-    me = { kind: who, name, team_id: data.team_id != null ? String(data.team_id) : null };
+    me = { kind: "user", name: email, event_id: eventId, team_id: data.team_id != null ? String(data.team_id) : null };
     document.getElementById("login-screen").style.display = "none";
     document.getElementById("app").style.display = "block";
+    localStorage.setItem("hackfest_event_id", eventId);
     loadWorkspace();
-  } catch (e) { msg.textContent = capMessage(e.message); }
-}
-
-async function doRegister(ev) {
-  ev.preventDefault(); ev.stopPropagation();
-  const msg = document.getElementById("login-msg");
-  try {
-    const name = document.getElementById("name").value.trim();
-    const pass = document.getElementById("pass").value;
-    if (!name || !pass) { msg.textContent = "fill in team name and password first"; return; }
-    const event_id = prompt("Event ID (from the organizers) — pastes it into the register call");
-    if (!event_id) return;
-    const r = await fetch(`${API}/teams/register`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event_id, name, password: pass }),
-    });
-    if (!r.ok) { let d = "registration failed"; try { d = (await r.json()).detail || d; } catch { /* non-json */ } throw new Error(d); }
-    msg.textContent = `registered with event ${event_id.slice(0, 8)}… — now log in`;
   } catch (e) { msg.textContent = capMessage(e.message); }
 }
 
 function doLogout() {
   localStorage.removeItem("hackfest_token");
+  localStorage.removeItem("hackfest_event_id");
   token = null;
   document.getElementById("app").style.display = "none";
   document.getElementById("login-screen").style.display = "block";
