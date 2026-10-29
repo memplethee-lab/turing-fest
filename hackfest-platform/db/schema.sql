@@ -76,9 +76,10 @@ CREATE TABLE IF NOT EXISTS admins (
 -- token wherever they accept the team token.
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    username TEXT NOT NULL UNIQUE,   -- the roster email: unambiguous login id
+    username TEXT NOT NULL,          -- the roster email; unique per event, see below
     password_hash TEXT NOT NULL,
     team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    event_id UUID REFERENCES events(id) ON DELETE CASCADE,
     display_name TEXT,               -- what the leaderboard shows
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -106,6 +107,29 @@ ALTER TABLE events ADD COLUMN IF NOT EXISTS registration_mode TEXT NOT NULL DEFA
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (lower(email));
+
+-- A participant can be invited to several events, and the workspace makes them
+-- pick one, so an account is one (email, event) pair: each membership gets its
+-- own personal team and its own leaderboard row. Identity is the email, which
+-- means the old global UNIQUE(username) has to go — uniqueness is per event.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS event_id UUID REFERENCES events(id) ON DELETE CASCADE;
+UPDATE users u SET event_id = t.event_id
+  FROM teams t
+ WHERE t.id = u.team_id AND u.event_id IS DISTINCT FROM t.event_id;
+CREATE INDEX IF NOT EXISTS idx_users_event ON users(event_id);
+DO $$
+DECLARE con RECORD;
+BEGIN
+    FOR con IN
+        SELECT c.conname
+          FROM pg_constraint c
+          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+         WHERE c.conrelid = 'users'::regclass AND c.contype = 'u' AND a.attname = 'username'
+    LOOP
+        EXECUTE format('ALTER TABLE users DROP CONSTRAINT %I', con.conname);
+    END LOOP;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_event ON users (lower(email), event_id);
 
 CREATE TABLE IF NOT EXISTS roster (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

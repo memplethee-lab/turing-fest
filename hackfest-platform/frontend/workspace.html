@@ -24,7 +24,8 @@
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }
   label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0.6rem 0 0.25rem; }
   input, select, textarea { width: 100%; background: #0d0f13; border: 1px solid var(--border); color: var(--text); padding: 0.5rem 0.6rem; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
-  button.action { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 0.5rem 1rem; cursor: pointer; font-size: 0.85rem; margin-top: 0.6rem; margin-right: 0.4rem; }
+  button.action, a.action { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 0.5rem 1rem; cursor: pointer; font-size: 0.85rem; margin-top: 0.6rem; margin-right: 0.4rem; }
+  a.action { display: inline-block; text-decoration: none; }
   button.danger { color: var(--bad); border-color: var(--bad); background: #3a2323; }
   button:disabled { opacity: 0.45; cursor: not-allowed; }
   .muted { color: var(--muted); font-size: 0.8rem; }
@@ -33,8 +34,17 @@
   .status-bad { color: var(--bad); }
   .status-warn { color: var(--warn); }
   #login-screen { max-width: 360px; margin: 4rem auto; }
-  #split { display: grid; grid-template-columns: 46% 54%; height: calc(100vh - 46px); }
-  #divider { grid-column: 1; height: 100%; width: 6px; margin-left: -3px; background: var(--border); cursor: col-resize; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+  #picker-screen { max-width: 460px; margin: 4rem auto; }
+  .event-row { display: flex; gap: 1rem; align-items: center; justify-content: space-between; padding: 0.7rem 0; border-bottom: 1px solid var(--border); }
+  .event-row:last-of-type { border-bottom: none; }
+  .event-name { font-weight: 600; font-size: 0.95rem; }
+  .tag { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid var(--border); border-radius: 999px; padding: 0.05rem 0.45rem; margin-left: 0.35rem; color: var(--muted); }
+  .tag.live { color: var(--good); border-color: var(--good); }
+  .tag.next { color: var(--warn); border-color: var(--warn); }
+  #split { display: grid; grid-template-columns: 46% 54%; height: calc(100vh - 46px); position: relative; }
+  /* Absolutely positioned so the handle does not become a third grid item. */
+  #divider { position: absolute; top: 0; bottom: 0; left: 46%; width: 9px; transform: translateX(-4px); background: var(--border); cursor: col-resize; z-index: 2; }
+  #divider:hover { background: var(--accent-dim); }
   #left { grid-row: 1; padding: 1rem; overflow-y: auto; border-right: none; }
   #right { grid-row: 1; display: flex; flex-direction: column; min-width: 0; }
   #filebar { display: flex; gap: 0.25rem; padding: 0.5rem 0.75rem 0; flex-wrap: wrap; }
@@ -59,7 +69,7 @@
 <div id="login-screen">
   <div class="panel">
     <h2>Participant sign-in</h2>
-    <p class="muted" id="event-line">checking event…</p>
+    <p class="muted">Sign in, then pick the event you are taking part in.</p>
     <label>Email</label>
     <input id="email" type="email" autocomplete="username" placeholder="the email your organizer registered"
            onkeydown="if(event.key==='Enter') authSubmit()" />
@@ -78,14 +88,26 @@
   </div>
 </div>
 
+<div id="picker-screen" style="display:none;">
+  <div class="panel">
+    <h2>Choose your event</h2>
+    <p class="muted">Every event you can reach — the active one is on top. Past events stay listed for their results.</p>
+    <div id="event-list"></div>
+    <p class="muted" id="picker-msg"></p>
+    <p class="muted"><a href="#" onclick="doLogout(event)" style="color:var(--accent)">Use a different account</a></p>
+  </div>
+</div>
+
 <div id="app" style="display:none;">
   <header>
     <h1>🛠 Hackfest Workspace</h1>
     <span id="timer" title="Times from the server; enforcement is server-side"></span>
     <a id="leaderboard-link" href="/" target="_blank">Leaderboard ↗</a>
+    <button class="action" style="margin:0;" onclick="openPicker()">Events</button>
     <button class="action" style="margin:0;" onclick="doLogout()">Log out</button>
   </header>
   <div id="split">
+    <div id="divider" title="Drag to resize"></div>
     <div id="left" class="panel" style="border:none; border-radius:0;">
       <label>Challenge</label>
       <select id="challenge-select" onchange="pickChallenge()"></select>
@@ -135,7 +157,7 @@ let currentChallenge = null;   // {slug, title, ...}
 let startFiles = {};           // {filename: originalContent}
 let openFile = null;
 let submitWatch = null;
-let myEventId = null;      // so the leaderboard link points at the right event
+let myEventId = localStorage.getItem("hackfest_event_id");   // event they entered
 
 function headers() {
   return { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
@@ -143,7 +165,10 @@ function headers() {
 
 async function api(path, opts = {}) {
   const res = await fetch(`${API}${path}`, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
-  if (res.status === 401 || res.status === 403) { doLogout(); throw new Error("please log in again"); }
+  // Only 401 means the session is gone. 403 is authorization *state* here
+  // ("event not running", "event not started") — logging out on it would
+  // throw away a valid session and the editor contents with it.
+  if (res.status === 401) { doLogout(); throw new Error("please log in again"); }
   if (!res.ok) { let detail = res.statusText; try { detail = (await res.json()).detail || detail; } catch { /* html error page */ } throw new Error(detail); }
   const ct = res.headers.get("content-type") || "";
   return ct.includes("application/json") ? res.json() : res.text();
@@ -174,20 +199,6 @@ function briefMarkdown(md) {
 // also gives them a personal team behind the scenes.
 let signupMode = false;
 
-async function loadEventLine() {
-  const el = document.getElementById("event-line");
-  try {
-    const r = await fetch(`${API}/events/current`);
-    if (!r.ok) { el.textContent = "no event configured yet — ask the organizers"; return; }
-    const e = await r.json();
-    const when = e.status === "running" ? "happening now"
-      : e.status === "not_started" ? `starts ${new Date(e.start_at).toLocaleString()}`
-      : `ended ${new Date(e.end_at).toLocaleString()}`;
-    el.textContent = `${e.name} — ${when}${e.registration_mode === "closed" ? " · invite-only" : ""}`;
-  } catch { el.textContent = ""; }
-}
-loadEventLine();
-
 function toggleSignup(ev) {
   if (ev) ev.preventDefault();
   signupMode = !signupMode;
@@ -217,24 +228,111 @@ async function authSubmit() {
     let data = {};
     try { data = await r.json(); } catch { /* non-json error page */ }
     if (!r.ok) throw new Error(data.detail || (signupMode ? "signup failed" : "login failed"));
-    token = data.token;
-    localStorage.setItem("hackfest_token", token);
-    me = { kind: "user", name: data.display_name || email, team_id: data.team_id != null ? String(data.team_id) : null };
-    document.getElementById("login-screen").style.display = "none";
-    document.getElementById("app").style.display = "block";
-    await loadWorkspace();
+    saveSession(data);
+    msg.textContent = "";
+    showPicker(data.events || []);
   } catch (e) {
     msg.textContent = capMessage(e.message);
   } finally { btn.disabled = false; }
 }
 
-function doLogout() {
+function doLogout(ev) {
+  if (ev) ev.preventDefault();
   localStorage.removeItem("hackfest_token");
+  localStorage.removeItem("hackfest_event_id");
   token = null;
+  myEventId = null;
+  if (timerHandle) { clearInterval(timerHandle); timerHandle = null; }
   document.getElementById("app").style.display = "none";
+  document.getElementById("picker-screen").style.display = "none";
   document.getElementById("login-screen").style.display = "block";
 }
 const capMessage = m => String(m || "").slice(0, 160);
+
+// ---------- event picker ----------
+// Signing in does not commit to an event: the participant sees the events the
+// organizers invited them to (the running one first) and enters the one they
+// are taking part in. "Events" in the header reopens this screen.
+function saveSession(data) {
+  token = data.token;
+  localStorage.setItem("hackfest_token", token);
+  myEventId = data.event_id ? String(data.event_id) : null;
+  if (myEventId) localStorage.setItem("hackfest_event_id", myEventId);
+  me = {
+    kind: "user",
+    name: data.display_name || (me && me.name) || document.getElementById("email").value.trim(),
+    team_id: data.team_id != null ? String(data.team_id) : null,
+  };
+}
+
+const whenLabel = e => e.status === "running" ? "happening now"
+  : e.status === "not_started" ? `starts ${new Date(e.start_at).toLocaleString()}`
+  : `ended ${new Date(e.end_at).toLocaleString()}`;
+
+function showPicker(events) {
+  const wrap = document.getElementById("event-list");
+  document.getElementById("login-screen").style.display = "none";
+  document.getElementById("app").style.display = "none";
+  document.getElementById("picker-screen").style.display = "block";
+  document.getElementById("picker-msg").textContent = "";
+  if (!events.length) {
+    wrap.innerHTML = `<p class="muted">No events published yet — ask the organizers.</p>`;
+    return;
+  }
+  wrap.innerHTML = events.map(e => {
+    const badge = e.status === "running" ? `<span class="tag live">active now</span>`
+      : e.status === "not_started" ? `<span class="tag next">upcoming</span>`
+      : `<span class="tag">ended</span>`;
+    const why = e.joined ? `entered as ${e.team_name || "your team"}`
+      : e.invited_here ? "you were invited to this one"
+      : e.registration_mode === "closed" ? "invited to the hackfest" : "open event";
+    const note = e.status === "ended" ? `${why} · results only` : why;
+    // A past event has no clock left to run, so offer its leaderboard instead of
+    // an editor the API would refuse submissions from anyway.
+    const action = e.status === "ended"
+      ? `<a class="action" style="margin:0;" href="/?event_id=${encodeURIComponent(e.id)}" target="_blank">Leaderboard ↗</a>`
+      : e.can_enter
+        ? `<button class="action" style="margin:0;" onclick="enterEvent('${e.id}')">${e.joined ? "Continue" : "Enter"}</button>`
+        : `<button class="action" style="margin:0;" disabled>Invite only</button>`;
+    return `<div class="event-row">\n      <div>\n        <div class="event-name">${esc(e.name)} ${badge}</div>\n        <div class="muted">${esc(whenLabel(e))} · ${esc(note)}</div>\n      </div>${action}\n    </div>`;
+  }).join("");
+}
+
+function startWorkspace() {
+  document.getElementById("picker-screen").style.display = "none";
+  document.getElementById("login-screen").style.display = "none";
+  document.getElementById("app").style.display = "block";
+  loadWorkspace().catch(e => {
+    const b = document.getElementById("briefing");
+    b.textContent = capMessage(e.message);
+    b.className = "briefing status-bad";
+  });
+}
+
+async function enterEvent(eventId) {
+  const msg = document.getElementById("picker-msg");
+  if (token && String(eventId) === String(myEventId)) { startWorkspace(); return; }
+  msg.textContent = "opening…";
+  try {
+    const r = await fetch(`${API}/users/events/${encodeURIComponent(eventId)}/enter`, {
+      method: "POST", headers: headers(),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || "could not open that event");
+    saveSession(data);
+    startWorkspace();
+  } catch (e) { msg.textContent = capMessage(e.message); }
+}
+
+async function openPicker() {
+  if (!token) { doLogout(); return; }
+  try {
+    const r = await fetch(`${API}/users/events`, { headers: headers() });
+    if (r.status === 401) { doLogout(); return; }
+    const data = await r.json();
+    showPicker(data.events || []);
+  } catch { /* keep the workspace as it is */ }
+}
 
 // ---------- workspace ----------
 let eventWindow = null; // {start_at, end_at}
@@ -266,8 +364,8 @@ async function loadIdentity() {
     if (!r.ok) return;
     const u = await r.json();
     myEventId = u.event_id || myEventId;
-    const self = (u.members || []).find(m => m.username === u.username);
-    me = { kind: "user", name: (self && self.display_name) || u.username, team_id: u.team_id };
+    if (myEventId) localStorage.setItem("hackfest_event_id", myEventId);
+    me = { kind: "user", name: u.display_name || u.username, team_id: u.team_id };
     const link = document.getElementById("leaderboard-link");
     if (myEventId) link.href = `/?event_id=${encodeURIComponent(myEventId)}`;
   } catch { /* identity is cosmetic */ }
@@ -277,7 +375,17 @@ function updateTimer() {
   const t = document.getElementById("timer");
   if (!eventWindow || !eventWindow.end_at) { t.textContent = "—"; return; }
   const ms = eventWindow.end_at - Date.now();
-  if (ms <= 0) { t.textContent = "event ended"; return; }
+  const btn = document.getElementById("submit-btn");
+  if (ms <= 0) {
+    // Nothing left to race for: point them at the results and park Submit.
+    t.textContent = "event ended — results only";
+    btn.disabled = true;
+    btn.title = "this event has closed — pick an active one under Events";
+    document.getElementById("draft-note").textContent = "submissions closed · see Leaderboard for results";
+    return;
+  }
+  btn.disabled = false;
+  btn.title = "";
   if (eventWindow.start_at && Date.now() < eventWindow.start_at) { t.textContent = "starts soon"; return; }
   const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
   t.textContent = `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")} left`;
@@ -373,6 +481,13 @@ cm.on("change", () => {
 // ---------- submit & status ----------
 async function doSubmit() {
   if (!currentChallenge || !openFile) return;
+  if (eventWindow && eventWindow.status === "ended") {
+    // Ctrl+Enter reaches this even with Submit parked, so guard here too.
+    const el = document.getElementById("sub-status");
+    el.textContent = "this event has ended — submissions are closed";
+    el.className = "status status-warn";
+    return;
+  }
   const btn = document.getElementById("submit-btn");
   try {
     btn.disabled = true;
@@ -410,20 +525,22 @@ function watchSubmission(id) {
 // ---------- pane divider ----------
 (function initDivider() {
   const divider = document.getElementById("divider");
-  const setCols = pct => { document.getElementById("split").style.gridTemplateColumns = `${pct}% ${100 - pct}%`; };
+  const split = document.getElementById("split");
+  if (!divider || !split) return;   // a crash here would abort the boot block below
+  const setCols = pct => {
+    split.style.gridTemplateColumns = `${pct}% ${100 - pct}%`;
+    divider.style.left = `${pct}%`;
+  };
   let dragging = false;
   divider.addEventListener("mousedown", e => { dragging = true; e.preventDefault(); });
-  window.addEventListener("mousemove", e => { if (dragging) setCols(Math.max(25, Math.min(75, (e.clientX / document.getElementById("split").offsetWidth) * 100))); });
+  window.addEventListener("mousemove", e => {
+    if (dragging) setCols(Math.max(25, Math.min(75, (e.clientX / split.offsetWidth) * 100)));
+  });
   window.addEventListener("mouseup", () => { if (dragging) { dragging = false; cm.refresh(); } });
 })();
 
 if (token) {
-  document.getElementById("login-screen").style.display = "none";
-  document.getElementById("app").style.display = "block";
-  loadWorkspace().catch(e => {
-    document.getElementById("briefing").textContent = e.message;
-    document.getElementById("briefing").className = "briefing status-bad";
-  });
+  startWorkspace();
 } else {
   document.getElementById("login-screen").style.display = "block";
 }

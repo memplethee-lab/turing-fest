@@ -6,3 +6,13 @@
 # Python build artifacts
 __pycache__/
 *.pyc
+
+# One-shot local helpers: anchored patch/fix scripts and the JS the checker
+# extracts from the HTML pages. The smoke tests (_smoke_*.py) and _check_js.py
+# are tracked; these scratch files are not.
+scripts/_patch_*.py
+scripts/_fix_*.py
+scripts/_install_*.py
+scripts/_normalize_*.py
+scripts/_resolve_*.py
+scripts/_js_*.js

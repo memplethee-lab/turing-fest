@@ -10,47 +10,96 @@
     th, td { text-align: left; padding: 0.6rem 1rem; border-bottom: 1px solid #262a33; }
     th { color: #9aa4b2; font-weight: 500; font-size: 0.85rem; text-transform: uppercase; }
     tr:first-child td { color: #ffd166; font-weight: 700; }
+    .pick { margin: 0.75rem 0 0; color: #9aa4b2; font-size: 0.9rem; }
+    select { background: #0d0f13; color: #e6e6e6; border: 1px solid #262a33; border-radius: 6px; padding: 0.4rem 0.6rem; font-size: 0.9rem; margin-left: 0.5rem; }
     .rank { width: 3rem; color: #6b7280; }
   </style>
 </head>
 <body>
   <h1>🏆 Leaderboard <span id="frozen-badge" style="display:none; font-size:0.9rem; color:#60a5fa; border:1px solid #60a5fa; border-radius:4px; padding:0.1rem 0.5rem; vertical-align:middle;">FROZEN</span></h1>
+  <p class="pick">Event <select id="event-select" onchange="switchEvent(this.value)"></select>
+    <span id="event-when"></span></p>
   <table>
     <thead><tr><th class="rank">#</th><th>Participant</th><th>Score</th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
 
   <script>
-    // The event id can come from ?event_id= (the workspace links that way);
-    // otherwise the running event is used, so this page needs no hand edit.
+    // ?event_id= wins (the workspace and the picker links use it); otherwise the
+    // running event. The selector below lists every event, past ones included, so
+    // results stay browsable after an event ends and nobody has to hand-edit this
+    // page or remember an id.
     let EVENT_ID = new URLSearchParams(location.search).get("event_id");
-
+    let events = [];
     let entrants = {};
+    let source = null;
+    let namesTimer = null;
+
+    const when = e => e.status === "running" ? "· live now"
+      : e.status === "not_started" ? `· starts ${new Date(e.start_at).toLocaleString()}`
+      : `· ended ${new Date(e.end_at).toLocaleString()}`;
+
     async function loadNames() {
       const res = await fetch(`/api/leaderboard/${EVENT_ID}`);
+      if (!res.ok) return;
       const data = await res.json();
       for (const entry of data.entries) {
         entrants[entry.team_id] = { name: entry.team_name, members: entry.members || 0 };
       }
     }
 
-    async function init() {
-      if (!EVENT_ID) {
-        try {
-          const r = await fetch("/api/events/current");
-          if (!r.ok) { document.getElementById("rows").textContent = "no event set up yet"; return; }
-          EVENT_ID = (await r.json()).id;
-        } catch { return; }
+    function fillSelector() {
+      const sel = document.getElementById("event-select");
+      if (!events.length) { sel.disabled = true; return; }
+      sel.innerHTML = "";
+      for (const e of events) {
+        const o = document.createElement("option");
+        o.value = e.id;
+        o.textContent = `${e.name} (${e.status === "running" ? "live" : e.status === "not_started" ? "upcoming" : "ended"})`;
+        sel.appendChild(o);
       }
-      await loadNames();
-      setInterval(loadNames, 10000); // refresh names as people sign up
+      sel.value = EVENT_ID;
+      if (sel.value !== EVENT_ID) {   // linked straight to an event not listed
+        const o = document.createElement("option");
+        o.value = EVENT_ID;
+        o.textContent = "Selected event";
+        sel.append(o);
+        sel.value = EVENT_ID;
+      }
+    }
 
-      const source = new EventSource(`/api/leaderboard/${EVENT_ID}/stream`);
+    async function switchEvent(id) {
+      EVENT_ID = id;
+      history.replaceState(null, "", `?event_id=${encodeURIComponent(id)}`);
+      const ev = events.find(e => e.id === id);
+      document.getElementById("event-when").textContent = ev ? when(ev) : "";
+      document.getElementById("frozen-badge").style.display = "none";
+      if (source) { source.close(); source = null; }
+      if (namesTimer) clearInterval(namesTimer);
+      entrants = {};
+      await loadNames();
+      namesTimer = setInterval(loadNames, 10000); // refresh names as people sign up
+
+      source = new EventSource(`/api/leaderboard/${EVENT_ID}/stream`);
       source.addEventListener("leaderboard", (e) => {
         const payload = JSON.parse(e.data); // { entries: [[team_id, score], ...], frozen: bool }
         render(payload.entries);
         document.getElementById("frozen-badge").style.display = payload.frozen ? "inline" : "none";
       });
+    }
+
+    async function init() {
+      try {
+        const r = await fetch("/api/events");
+        if (r.ok) events = await r.json();
+      } catch { /* the selector is optional; the stream still works */ }
+      if (!EVENT_ID) {
+        const live = events.find(e => e.status === "running") || events[0];
+        if (!live) { document.getElementById("rows").textContent = "no event set up yet"; return; }
+        EVENT_ID = live.id;
+      }
+      fillSelector();
+      await switchEvent(EVENT_ID);
     }
     init();
 

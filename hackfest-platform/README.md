@@ -132,14 +132,42 @@ roster (see "Closed registration" below). A participant then opens
 `/workspace.html` and uses that same email plus a password of their choosing:
 
 - `POST /api/users/signup` — `{email, password, display_name?}`. Creates the
-  account, claims their roster entry, and gives them a **personal team** named
-  after their display name (default: the email's first half). Signup resolves
-  the event from the roster, so nobody has to paste an event id.
-- `POST /api/users/login` — `{login: <email>, password}` → user token. Legacy
+  account in the best event to play in right now (running before upcoming before
+  ended; if two are equally live, the one whose roster names them wins), claims
+  that event's invite when its roster has one for them, and gives them a
+  **personal team** named after their
+  display name (default: the email's first half). Returns the token plus the
+  `events` list for the picker — they can switch to any other event immediately.
+- `POST /api/users/login` — `{login: <email>, password}` → user token (scoped to
+  their running event, or the next to start, or the most recent one to finish)
+  plus the same `events` list. Legacy
   `{username, password}` still works. Answers 404 when no account exists yet
   and 401 on a wrong password, so the UI can tell "create your account" from
   "wrong password".
-- `GET /api/users/me` — who I am, my team, and my teammates.
+- `GET /api/users/events` — everything the participant can reach, the running
+  event first, then upcoming, then past ones. This is what the workspace picker
+  lists; nobody types an event id.
+- `POST /api/users/events/{event_id}/enter` — choose an event. Reuses the
+  account and team they already have there, otherwise claims the invite (if this
+  event has one for them) and creates the personal team, then returns a token
+  scoped to that event. 403 only when the event is closed **and** their email is
+  on no roster anywhere.
+- `GET /api/users/me` — who I am, my team, my event, and my teammates.
+
+**The invite belongs to the person, not to one event.** An email on any roster
+is a participant of the whole hackfest: they see every event — other events'
+closed ones included — and may enter any of them. Being named on a specific
+event's roster only decides whose invite gets *claimed* and which event is
+offered first. A closed event stays invisible to an email that appears on no
+roster at all, which is what keeps a private event private.
+
+An account is one **(email, event)** pair: entering two events gives a personal
+team in each, so points and rank are per event. `users.event_id` is that
+membership, and the old global `UNIQUE(username)` is now
+`UNIQUE (lower(email), event_id)` — same email, different events is fine. Past
+events are listed for their results; the API refuses submissions once `end_at`
+has passed, so the workspace links those rows to their leaderboard instead of
+the editor.
 
 Because every participant gets a personal team, the leaderboard (which is
 scored per team) lists one row per participant by default. Group play is
@@ -165,9 +193,13 @@ team. For closed events:
 2. Flip **Registration mode** to `closed`
    (`PATCH /api/admin/events/{id}` with `{registration_mode: "closed"}`).
 3. From then on **every** registration path demands a roster email:
-   - `POST /api/users/signup` — the normal path: the email must be on the
-     roster. Signup claims it atomically and creates a personal team, so
-     there is nothing else for the participant to look up.
+   - `POST /api/users/signup` — the normal path: the email must be on some
+     event's roster (see "the invite belongs to the person" above). Signup
+     claims this event's invite atomically and creates a personal team, so there
+     is nothing else for the participant to look up.
+     `POST /api/users/events/{id}/enter` applies the same rule when a returning
+     participant opens another event; if that event's roster doesn't name them,
+     they simply get a personal team with no invite to claim.
    - `POST /api/teams/register` — `{..., email}` claims one unused invite
      atomically (two parties racing for the same email get a single winner;
      the loser gets a 403).
@@ -196,11 +228,19 @@ team-facing web UI:
 └───────────────────────────────┴───────────────────────────────────┘
 ```
 
-- **Sign in with the email the organizer registered.** The page resolves the
-  current event from `GET /api/events/current` (no event id to paste) and posts
-  to `/api/users/signup` on first visit or `/api/users/login` afterwards. The
-  token lives in `localStorage`; the page sets a strict
-  `Content-Security-Policy` meta so a stray script can't speak to other origins.
+- **Sign in with the email the organizer registered, then pick your event.**
+  The page posts to `/api/users/signup` on first visit or `/api/users/login`
+  afterwards, then lists every event you can reach (`GET /api/users/events`)
+  with the active one on top and past events below, each linked to its
+  leaderboard. Choosing one calls `POST /api/users/events/{id}/enter` — no event
+  id is ever typed. **Events** in the header reopens the picker to switch. The
+  token is scoped to the chosen event and lives in `localStorage`; the page sets
+  a strict `Content-Security-Policy` meta so a stray script can't speak to other
+  origins.
+- **The leaderboard has an Event selector** (`GET /api/events`, running first),
+  so past results stay browsable after an event ends instead of the page being
+  pinned to whatever is live. `?event_id=` still wins if you arrive from the
+  workspace or a picker link.
 - **The editor opens with the seeded starting files.** Admins paste the per-file
   starting contents in the Challenge form (`=== Freshness.ts ===` style
   `=== filename ===` sections); the api stores them in the `challenge_files`
